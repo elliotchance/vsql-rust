@@ -1,0 +1,24 @@
+[package]
+name = "vsql"
+description = "An embedded SQL database: vsql, compiled into the crate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "../README.md"
+keywords = ["vsql", "sql", "database", "embedded"]
+categories = ["database"]
+
+[dependencies]
+vsql-sys = { version = "=1.0.0", path = "../vsql-sys" }
+chrono = { version = "0.4.42", optional = true, default-features = false }
+rust_decimal = { version = "1.43", optional = true, default-features = false, features = ["std"] }
+
+[features]
+chrono = ["dep:chrono"]
+rust_decimal = ["dep:rust_decimal"]
+
+[package.metadata.docs.rs]
+all-features = true
