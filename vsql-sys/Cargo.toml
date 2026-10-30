@@ -1,0 +1,26 @@
+[package]
+name = "vsql-sys"
+description = "Raw bindings to libvsql (the vsql library), compiled from the vsql amalgamation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords = ["vsql", "sql", "database", "ffi"]
+categories = ["database", "external-ffi-bindings"]
+readme = "README.md"
+links = "vsql"
+build = "build.rs"
+include = [
+    "/amalgamation",
+    "/build.rs",
+    "/build_flags.rs",
+    "/src",
+    "/tests",
+    "/LICENSE",
+    "/README.md",
+]
+
+[build-dependencies]
+cc = "1.7"

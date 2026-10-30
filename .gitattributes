@@ -1,0 +1,3 @@
+# The libvsql C from the vsql amalgamation (see scripts/update-amalgamation.sh).
+vsql-sys/amalgamation/** linguist-generated=true
+vsql-sys/build_flags.rs linguist-generated=true

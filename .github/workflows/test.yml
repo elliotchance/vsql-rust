@@ -1,0 +1,55 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: Linux, arch: x86-64, runner: ubuntu-latest }
+          - { os: Linux, arch: ARM64, runner: ubuntu-24.04-arm }
+          - { os: macOS, arch: x86-64, runner: macos-15-intel }
+          - { os: macOS, arch: ARM64, runner: macos-latest }
+          # There's no libvsql C for Windows ARM64.
+          - { os: Windows, arch: x86-64, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --all-features
+      - run: cargo test
+      - run: cargo run --example main
+
+  lint:
+    name: Format, Clippy and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      - run: cargo fmt --check
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # Both crates can be packaged (and vsql-sys is under crates.io's size
+      # limit).
+      - run: cargo package --workspace
+
+  msrv:
+    name: Rust 1.75 (MSRV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable 1.75 --profile minimal
+      # The dependencies are the latest versions that support the
+      # rust-version, which Cargo 1.75 can't resolve itself.
+      - run: cargo +stable generate-lockfile
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+      - run: cargo +1.75 test --all-features
