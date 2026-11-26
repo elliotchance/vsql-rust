@@ -86,7 +86,7 @@ where
 /// # fn main() -> vsql::Result<()> {
 /// let conn = vsql::Connection::open_in_memory()?;
 /// let ids = vec![1, 2, 3];
-/// let placeholders = vec!["?"; ids.len()].join(", ");
+/// let placeholders = vec!["CAST(? AS INTEGER)"; ids.len()].join(", ");
 /// let sql = format!("VALUES ROW({placeholders})");
 /// conn.query_row(&sql, vsql::params_from_iter(&ids), |_| Ok(()))?;
 /// # Ok(())

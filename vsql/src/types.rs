@@ -140,8 +140,16 @@ impl fmt::Display for Timestamp {
     }
 }
 
-// The datetimes from SQLGetData, such as "2022-01-02T15:04:05.123456+0530".
-// There are at most 6 fractional digits.
+// The datetimes from SQLGetData are literals, such as
+// "TIMESTAMP '2022-01-02 15:04:05.123456+05:30'". There are at most 6
+// fractional digits.
+
+/// The value of a literal, such as "2022-01-02" for "DATE '2022-01-02'".
+fn literal<'a>(s: &'a str, keyword: &str) -> Option<&'a str> {
+    s.strip_prefix(keyword)?
+        .strip_prefix(" '")?
+        .strip_suffix('\'')
+}
 
 fn digits<T: FromStr>(s: &str, n: usize) -> Option<T> {
     if s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) {
@@ -163,15 +171,12 @@ fn parse_date(s: &str) -> Option<Date> {
 }
 
 fn parse_time(s: &str) -> Option<Time> {
-    // The offset is "+HHMM" or "-HHMM".
+    // The offset is "+HH:MM" or "-HH:MM".
     let (s, offset) = match s.find(['+', '-']) {
         Some(i) => {
             let (s, offset) = s.split_at(i);
-            let hhmm = offset.get(1..)?;
-            if hhmm.len() != 4 {
-                return None;
-            }
-            let minutes = digits::<i16>(&hhmm[..2], 2)? * 60 + digits::<i16>(&hhmm[2..], 2)?;
+            let (hh, mm) = offset.get(1..)?.split_once(':')?;
+            let minutes = digits::<i16>(hh, 2)? * 60 + digits::<i16>(mm, 2)?;
             (
                 s,
                 Some(if offset.starts_with('-') {
@@ -204,7 +209,7 @@ fn parse_time(s: &str) -> Option<Time> {
 }
 
 fn parse_timestamp(s: &str) -> Option<Timestamp> {
-    let (date, time) = s.split_once('T')?;
+    let (date, time) = s.split_once(' ')?;
 
     Some(Timestamp {
         date: parse_date(date)?,
@@ -269,13 +274,21 @@ impl Value {
                 _ => return Err(invalid(&s)),
             },
             Type::Decimal | Type::Numeric => Value::Numeric(s),
-            Type::Date => Value::Date(parse_date(&s).ok_or_else(|| invalid(&s))?),
-            Type::Time | Type::TimeWithTimeZone => {
-                Value::Time(parse_time(&s).ok_or_else(|| invalid(&s))?)
-            }
-            Type::Timestamp | Type::TimestampWithTimeZone => {
-                Value::Timestamp(parse_timestamp(&s).ok_or_else(|| invalid(&s))?)
-            }
+            Type::Date => Value::Date(
+                literal(&s, "DATE")
+                    .and_then(parse_date)
+                    .ok_or_else(|| invalid(&s))?,
+            ),
+            Type::Time | Type::TimeWithTimeZone => Value::Time(
+                literal(&s, "TIME")
+                    .and_then(parse_time)
+                    .ok_or_else(|| invalid(&s))?,
+            ),
+            Type::Timestamp | Type::TimestampWithTimeZone => Value::Timestamp(
+                literal(&s, "TIMESTAMP")
+                    .and_then(parse_timestamp)
+                    .ok_or_else(|| invalid(&s))?,
+            ),
             _ => Value::Text(s),
         })
     }
