@@ -57,19 +57,49 @@ only transaction) is given with `transaction_with`. vsql's transactions are
 `READ COMMITTED` or `SERIALIZABLE`: `READ UNCOMMITTED` is `READ COMMITTED` (and
 read only), and `REPEATABLE READ` is `SERIALIZABLE`.
 
+A savepoint can be rolled back to without rolling back the whole transaction:
+
+```rust
+let mut tx = conn.transaction()?;
+tx.execute("INSERT INTO foo (x) VALUES (?)", [3])?;
+{
+    let mut sp = tx.savepoint()?;
+    sp.execute("INSERT INTO foo (x) VALUES (?)", [4])?;
+    sp.rollback()?; // Undoes 4, the savepoint is still active.
+    sp.execute("INSERT INTO foo (x) VALUES (?)", [5])?;
+    sp.commit()?; // Or it's rolled back to (and released) when it's dropped.
+}
+tx.commit()?; // 3 and 5.
+```
+
+Savepoints can be nested (`sp.savepoint()`), and `conn.savepoint()` starts a
+transaction with a savepoint, which is committed when the savepoint is.
+
 ## Types
 
 | SQL                              | Rust                                           |
 |----------------------------------|------------------------------------------------|
 | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)            |
 | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                                   |
-| `DECIMAL`, `NUMERIC`             | `String` (exact), `f64`, `rust_decimal::Decimal` |
-| `CHARACTER`, `VARCHAR`           | `String`                                       |
+| `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, `rust_decimal::Decimal` |
+| `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                                       |
+| `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]` (`&[u8]` as a parameter)  |
 | `BOOLEAN`                        | `bool`                                         |
 | `DATE`                           | `vsql::Date`, `chrono::NaiveDate`              |
 | `TIME`                           | `vsql::Time`, `chrono::NaiveTime`              |
 | `TIMESTAMP`                      | `vsql::Timestamp`, `chrono::NaiveDateTime`     |
 | `TIMESTAMP WITH TIME ZONE`       | `vsql::Timestamp`, `chrono::DateTime<FixedOffset>`, `chrono::DateTime<Utc>` |
+| `INTERVAL ...`                   | `vsql::Interval`                               |
+
+A `DECFLOAT` is a `vsql::Value::DecFloat` (a string such as `"1.5E+20"`) as a
+parameter. A `vsql::Interval` is a number of months (`YEAR`, `MONTH` or
+`YEAR TO MONTH`) or microseconds (the other fields):
+
+```rust
+let i: vsql::Interval = conn.query_row("VALUES INTERVAL '1 2' DAY TO HOUR", (), |r| r.get(0))?;
+assert_eq!(i.microseconds, 26 * 3600 * 1_000_000);
+println!("{i}"); // INTERVAL '1 02' DAY(2) TO HOUR
+```
 
 A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
 `chrono` and `rust_decimal` types need those features:
@@ -88,6 +118,21 @@ match conn.execute("SELECT * FROM nope", ()) {
     other => other?,
 };
 ```
+
+`e.diagnostics()` has the constraint, table or column that the error is about:
+
+```rust
+if let Err(e) = conn.execute("INSERT INTO foo (id) VALUES (1)", ()) {
+    if let Some(name) = e.diagnostics().and_then(|d| d.constraint_name.as_deref()) {
+        println!("violates {name}");
+    }
+}
+```
+
+## Version
+
+`vsql::version()` is the version of vsql that's compiled into the crate (such
+as `"1.7.58"`), and `vsql::build_info()` has how it was built.
 
 ## Threads
 

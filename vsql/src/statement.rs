@@ -125,6 +125,20 @@ impl<'conn> Statement<'conn> {
         }
     }
 
+    /// The number of parameters (`?`) of the statement.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// let stmt = conn.prepare("VALUES CAST(? AS INTEGER) + CAST(? AS INTEGER)")?;
+    /// assert_eq!(stmt.parameter_count(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn parameter_count(&self) -> usize {
+        raw::num_params(self.stmt).unwrap_or(0)
+    }
+
     /// The connection of the statement.
     pub fn connection(&self) -> &'conn Connection {
         self.conn
@@ -169,12 +183,21 @@ impl Column {
         self.nullable
     }
 
-    /// The maximum number of characters of a CHARACTER or CHARACTER VARYING.
+    /// The maximum number of characters of a CHARACTER, CHARACTER VARYING or
+    /// CHARACTER LARGE OBJECT, or octets of a BINARY, BINARY VARYING or BINARY
+    /// LARGE OBJECT.
     pub fn length(&self) -> Option<usize> {
+        // A large object without a length has the largest size.
+        if self.size <= 0 || self.size == i32::MAX {
+            return None;
+        }
         match self.ty {
             // The size is in octets, with 4 for each character.
-            Type::Character | Type::CharacterVarying if self.size > 0 => {
+            Type::Character | Type::CharacterVarying | Type::CharacterLargeObject => {
                 Some(self.size as usize / 4)
+            }
+            Type::Binary | Type::BinaryVarying | Type::BinaryLargeObject => {
+                Some(self.size as usize)
             }
             _ => None,
         }
@@ -265,6 +288,7 @@ impl Rows<'_> {
                 Kind::Integer => raw::get_i64(self.stmt, n)?.map(Value::Integer),
                 Kind::Double => raw::get_f64(self.stmt, n)?.map(Value::Double),
                 Kind::Real => raw::get_f32(self.stmt, n)?.map(|f| Value::Double(f64::from(f))),
+                Kind::Binary => raw::get_binary(self.stmt, n)?.map(Value::Binary),
                 Kind::Text => match raw::get_string(self.stmt, n, &mut self.buf)? {
                     Some(s) => Some(Value::parse(s, column.ty).map_err(|source| {
                         Error::FromSqlConversion {

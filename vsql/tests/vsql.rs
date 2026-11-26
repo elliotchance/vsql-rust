@@ -6,8 +6,8 @@ use std::thread;
 
 use vsql::types::FromSqlError;
 use vsql::{
-    params, params_from_iter, Connection, Date, Error, IsolationLevel, Time, Timestamp,
-    TransactionOptions, Type, Value,
+    params, params_from_iter, Connection, Date, Error, Interval, IntervalFields, IsolationLevel,
+    Time, Timestamp, TransactionOptions, Type, Value,
 };
 
 /// A path for a new database file, which is removed when it's dropped.
@@ -708,6 +708,400 @@ fn connection_is_send() {
     assert_send::<Connection>();
 }
 
+fn interval(fields: IntervalFields, months: i64, microseconds: i64) -> Interval {
+    Interval {
+        fields,
+        months,
+        microseconds,
+    }
+}
+
+#[test]
+fn binary_decfloat_clob_and_interval_columns() {
+    use IntervalFields::*;
+
+    let conn = memory();
+    let cases: Vec<(&str, Value, Type)> = vec![
+        ("X'00ff'", Value::Binary(vec![0, 255]), Type::Binary),
+        (
+            "CAST(X'01' AS BINARY VARYING(5))",
+            Value::Binary(vec![1]),
+            Type::BinaryVarying,
+        ),
+        (
+            "CAST(X'01' AS BLOB)",
+            Value::Binary(vec![1]),
+            Type::BinaryLargeObject,
+        ),
+        ("CAST(NULL AS BLOB)", Value::Null, Type::BinaryLargeObject),
+        (
+            "CAST('ab' AS CLOB)",
+            Value::Text("ab".into()),
+            Type::CharacterLargeObject,
+        ),
+        (
+            "CAST(1.5E20 AS DECFLOAT)",
+            Value::DecFloat("1.5E+20".into()),
+            Type::DecFloat,
+        ),
+        (
+            "CAST(-0.25 AS DECFLOAT)",
+            Value::DecFloat("-0.25".into()),
+            Type::DecFloat,
+        ),
+        (
+            "INTERVAL '-1-2' YEAR TO MONTH",
+            Value::Interval(interval(YearToMonth, -14, 0)),
+            Type::Interval(YearToMonth),
+        ),
+        (
+            "INTERVAL '1 2:3:4.5' DAY TO SECOND",
+            Value::Interval(interval(DayToSecond, 0, 93_784_500_000)),
+            Type::Interval(DayToSecond),
+        ),
+        (
+            "CAST(NULL AS INTERVAL DAY)",
+            Value::Null,
+            Type::Interval(Day),
+        ),
+    ];
+
+    for (expr, want, ty) in cases {
+        let mut stmt = conn.prepare(&format!("VALUES {expr}")).unwrap();
+        let mut rows = stmt.query(()).unwrap();
+        assert_eq!(rows.columns()[0].ty(), ty, "{expr}");
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(row.get::<_, Value>(0).unwrap(), want, "{expr}");
+    }
+}
+
+#[test]
+fn intervals() {
+    use IntervalFields::*;
+
+    let conn = memory();
+    let cases = [
+        (
+            "INTERVAL '5' YEAR",
+            interval(Year, 60, 0),
+            "INTERVAL '5' YEAR(2)",
+        ),
+        (
+            "INTERVAL '100' YEAR(3)",
+            interval(Year, 1200, 0),
+            "INTERVAL '100' YEAR(3)",
+        ),
+        (
+            "INTERVAL '7' MONTH",
+            interval(Month, 7, 0),
+            "INTERVAL '7' MONTH(2)",
+        ),
+        (
+            "INTERVAL '3' DAY",
+            interval(Day, 0, 259_200_000_000),
+            "INTERVAL '3' DAY(2)",
+        ),
+        (
+            "INTERVAL '3' HOUR",
+            interval(Hour, 0, 10_800_000_000),
+            "INTERVAL '3' HOUR(2)",
+        ),
+        (
+            "INTERVAL '3' MINUTE",
+            interval(Minute, 0, 180_000_000),
+            "INTERVAL '3' MINUTE(2)",
+        ),
+        (
+            "INTERVAL '3.25' SECOND",
+            interval(Second, 0, 3_250_000),
+            "INTERVAL '3.250000' SECOND(2, 6)",
+        ),
+        (
+            "INTERVAL '-1-2' YEAR TO MONTH",
+            interval(YearToMonth, -14, 0),
+            "INTERVAL '-1-02' YEAR(2) TO MONTH",
+        ),
+        (
+            "INTERVAL '1 2' DAY TO HOUR",
+            interval(DayToHour, 0, 93_600_000_000),
+            "INTERVAL '1 02' DAY(2) TO HOUR",
+        ),
+        (
+            "INTERVAL '1 2:3' DAY TO MINUTE",
+            interval(DayToMinute, 0, 93_780_000_000),
+            "INTERVAL '1 02:03' DAY(2) TO MINUTE",
+        ),
+        (
+            "INTERVAL '-1 2:3:4.5' DAY TO SECOND",
+            interval(DayToSecond, 0, -93_784_500_000),
+            "INTERVAL '-1 02:03:04.500000' DAY(2) TO SECOND(6)",
+        ),
+        (
+            "INTERVAL '2:3' HOUR TO MINUTE",
+            interval(HourToMinute, 0, 7_380_000_000),
+            "INTERVAL '2:03' HOUR(2) TO MINUTE",
+        ),
+        (
+            "INTERVAL '2:3:4' HOUR TO SECOND",
+            interval(HourToSecond, 0, 7_384_000_000),
+            "INTERVAL '2:03:04.000000' HOUR(2) TO SECOND(6)",
+        ),
+        (
+            "INTERVAL '3:4.000001' MINUTE TO SECOND",
+            interval(MinuteToSecond, 0, 184_000_001),
+            "INTERVAL '3:04.000001' MINUTE(2) TO SECOND(6)",
+        ),
+        (
+            "INTERVAL '-0:00.5' MINUTE TO SECOND",
+            interval(MinuteToSecond, 0, -500_000),
+            "INTERVAL '-0:00.500000' MINUTE(2) TO SECOND(6)",
+        ),
+    ];
+
+    for (sql, want, literal) in cases {
+        let row = conn
+            .query_row(&format!("VALUES {sql}"), (), |row| Ok(row.clone()))
+            .unwrap();
+        assert_eq!(row.columns()[0].ty(), Type::Interval(want.fields));
+        assert_eq!(row.get::<_, Interval>(0).unwrap(), want, "{sql}");
+
+        // The literal is the same as vsql's.
+        assert_eq!(want.to_string(), literal);
+        let sql = format!("VALUES CAST({sql} AS VARCHAR(100))");
+        let got: String = conn.query_row(&sql, (), |row| row.get(0)).unwrap();
+        assert_eq!(got, literal);
+
+        // As a parameter.
+        let (_, qualifier) = literal.split_once("' ").unwrap();
+        let sql = format!("VALUES CAST(? AS INTERVAL {qualifier})");
+        let got: Interval = conn.query_row(&sql, [want], |row| row.get(0)).unwrap();
+        assert_eq!(got, want, "{sql}");
+    }
+
+    assert_eq!(
+        Type::Interval(DayToSecond).to_string(),
+        "INTERVAL DAY TO SECOND"
+    );
+    assert_eq!(DayToSecond.to_string(), "DAY TO SECOND");
+    assert!(YearToMonth.is_year_month());
+    assert!(!Day.is_year_month());
+
+    // An interval column, and one that's out of the range of its type.
+    conn.execute("CREATE TABLE foo (x INTERVAL DAY TO SECOND)", ())
+        .unwrap();
+    let want = interval(DayToSecond, 0, -93_784_500_000);
+    conn.execute("INSERT INTO foo (x) VALUES (?)", [want])
+        .unwrap();
+    let got: Interval = conn
+        .query_row("SELECT x FROM foo", (), |r| r.get(0))
+        .unwrap();
+    assert_eq!(got, want);
+    let too_big = interval(DayToSecond, 0, 100 * 86_400_000_000);
+    assert_eq!(
+        sqlstate(conn.execute("INSERT INTO foo (x) VALUES (?)", [too_big])),
+        "22015"
+    );
+}
+
+#[test]
+fn binary_strings() {
+    let conn = memory();
+    conn.execute(
+        "CREATE TABLE foo (v BINARY VARYING(2000), b BINARY(4), l BLOB)",
+        (),
+    )
+    .unwrap();
+
+    // Values that are read in more than one piece, and an empty one.
+    let long: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    for want in [vec![], vec![0, 1, 2, 255], long] {
+        conn.execute("DELETE FROM foo", ()).unwrap();
+        conn.execute("INSERT INTO foo (v, l) VALUES (?, ?)", (&want, &want[..]))
+            .unwrap();
+        let (v, l): (Vec<u8>, Vec<u8>) = conn
+            .query_row("SELECT v, l FROM foo", (), |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(v, want);
+        assert_eq!(l, want);
+    }
+
+    // A BINARY is padded with zeros, and can be read as an array of its
+    // length.
+    conn.execute("DELETE FROM foo", ()).unwrap();
+    conn.execute("INSERT INTO foo (b) VALUES (?)", [[1u8, 2]])
+        .unwrap();
+    let row = conn
+        .query_row("SELECT b, v FROM foo", (), |r| Ok(r.clone()))
+        .unwrap();
+    assert_eq!(row.get::<_, [u8; 4]>(0).unwrap(), [1, 2, 0, 0]);
+    assert_eq!(row.get::<_, Option<Vec<u8>>>(1).unwrap(), None);
+    match row.get::<_, [u8; 3]>(0) {
+        Err(Error::FromSqlConversion {
+            source: FromSqlError::Other(_),
+            ..
+        }) => {}
+        other => panic!("{other:?}"),
+    }
+    match row.get::<_, String>(0) {
+        Err(Error::FromSqlConversion {
+            source: FromSqlError::InvalidType,
+            ..
+        }) => {}
+        other => panic!("{other:?}"),
+    }
+
+    let mut stmt = conn.prepare("SELECT v, b, l FROM foo").unwrap();
+    let rows = stmt.query(()).unwrap();
+    let lengths: Vec<_> = rows.columns().iter().map(|c| c.length()).collect();
+    assert_eq!(lengths, [Some(2000), Some(4), None]);
+}
+
+#[test]
+fn decfloat_and_clob() {
+    let conn = memory();
+    conn.execute(
+        "CREATE TABLE foo (d DECFLOAT, c CHARACTER LARGE OBJECT(10))",
+        (),
+    )
+    .unwrap();
+    let want = Value::DecFloat("1.5E+20".into());
+    conn.execute("INSERT INTO foo (d, c) VALUES (?, ?)", (&want, "abc"))
+        .unwrap();
+    let row = conn
+        .query_row("SELECT d, c FROM foo", (), |r| Ok(r.clone()))
+        .unwrap();
+    assert_eq!(row.get::<_, Value>(0).unwrap(), want);
+    assert_eq!(row.get::<_, String>(0).unwrap(), "1.5E+20");
+    assert_eq!(row.get::<_, f64>(0).unwrap(), 1.5e20);
+    assert_eq!(row.get::<_, String>(1).unwrap(), "abc");
+    assert_eq!(row.columns()[1].length(), Some(10));
+}
+
+#[test]
+fn savepoints() {
+    let mut conn = memory();
+    conn.execute("CREATE TABLE foo (x INTEGER)", ()).unwrap();
+    let insert = |conn: &Connection, value: i64| {
+        conn.execute("INSERT INTO foo (x) VALUES (?)", [value])
+            .unwrap();
+    };
+    let xs = |conn: &Connection| -> Vec<i64> {
+        let mut stmt = conn.prepare("SELECT x FROM foo ORDER BY x").unwrap();
+        let rows = stmt.query_map((), |r| r.get(0)).unwrap();
+        rows.collect::<vsql::Result<_>>().unwrap()
+    };
+
+    let mut tx = conn.transaction().unwrap();
+    insert(&tx, 1);
+    {
+        let mut sp = tx.savepoint().unwrap();
+        insert(&sp, 2);
+        // The savepoint is still active after it's rolled back to.
+        sp.rollback().unwrap();
+        assert_eq!(xs(&sp), [1]);
+        insert(&sp, 3);
+        sp.rollback().unwrap();
+        insert(&sp, 4);
+        {
+            let sp2 = sp.savepoint().unwrap();
+            insert(&sp2, 5);
+        }
+        assert_eq!(xs(&sp), [1, 4]);
+        let sp3 = sp.savepoint_with_name("it's \"quoted\"").unwrap();
+        insert(&sp3, 6);
+        sp3.commit().unwrap();
+        sp.commit().unwrap();
+    }
+    assert_eq!(xs(&tx), [1, 4, 6]);
+    {
+        let sp = tx.savepoint().unwrap();
+        insert(&sp, 7);
+    }
+    assert_eq!(xs(&tx), [1, 4, 6]);
+    tx.commit().unwrap();
+
+    // A savepoint of the connection starts a transaction.
+    let mut sp = conn.savepoint().unwrap();
+    assert!(!sp.is_autocommit());
+    insert(&sp, 8);
+    sp.rollback().unwrap();
+    insert(&sp, 9);
+    sp.commit().unwrap();
+    assert!(conn.is_autocommit());
+    assert_eq!(xs(&conn), [1, 4, 6, 9]);
+
+    // Dropping it rolls back the transaction.
+    {
+        let sp = conn.savepoint_with_name("sp").unwrap();
+        insert(&sp, 10);
+    }
+    assert!(conn.is_autocommit());
+    assert_eq!(xs(&conn), [1, 4, 6, 9]);
+}
+
+#[test]
+fn diagnostics() {
+    let conn = memory();
+    conn.execute(
+        "CREATE TABLE foo (id INTEGER PRIMARY KEY, v INTEGER, CONSTRAINT vpos CHECK (v > 0))",
+        (),
+    )
+    .unwrap();
+    conn.execute("INSERT INTO foo (id, v) VALUES (1, 1)", ())
+        .unwrap();
+
+    let diagnostics = |sql: &str| conn.execute(sql, ()).unwrap_err().diagnostics().cloned();
+
+    let d = diagnostics("INSERT INTO foo (id, v) VALUES (1, 2)").unwrap();
+    assert_eq!(d.constraint_name.as_deref(), Some("FOO_PRIMARY_KEY"));
+    assert_eq!(d.constraint_schema.as_deref(), Some("PUBLIC"));
+    assert_eq!(d.constraint_catalog.as_deref(), Some(":memory:"));
+    assert_eq!(d.table_name.as_deref(), Some("FOO"));
+    assert_eq!(d.schema_name.as_deref(), Some("PUBLIC"));
+    assert_eq!(d.catalog_name.as_deref(), Some(":memory:"));
+    assert_eq!(d.column_name, None);
+
+    let d = diagnostics("INSERT INTO foo (id, v) VALUES (2, -1)").unwrap();
+    assert_eq!(d.constraint_name.as_deref(), Some("VPOS"));
+
+    let d = diagnostics("SELECT * FROM nope").unwrap();
+    assert_eq!(d.table_name.as_deref(), Some("NOPE"));
+    assert_eq!(d.constraint_name, None);
+
+    let d = diagnostics("SELECT nope FROM foo").unwrap();
+    assert_eq!(d.column_name.as_deref(), Some("NOPE"));
+
+    let d = diagnostics("VALUES 1 / 0").unwrap();
+    assert_eq!(d, Default::default());
+
+    assert!(Error::QueryReturnedNoRows.diagnostics().is_none());
+}
+
+#[test]
+fn parameter_count() {
+    let conn = memory();
+    let count = |sql: &str| conn.prepare(sql).unwrap().parameter_count();
+    assert_eq!(count("VALUES 1"), 0);
+    assert_eq!(count("VALUES CAST(? AS INTEGER) + CAST(? AS INTEGER)"), 2);
+}
+
+#[test]
+fn version() {
+    let version = vsql::version();
+    let parts: Vec<i32> = version.split('.').map(|p| p.parse().unwrap()).collect();
+    assert_eq!(parts.len(), 3, "{version}");
+    assert_eq!(
+        vsql::version_number(),
+        parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2]
+    );
+    assert!(vsql::version_number() >= 1_007_058);
+
+    let info = vsql::build_info();
+    assert!(info.version.is_empty() || info.version.trim_start_matches('v') == version);
+    assert!(!info.v_version.is_empty());
+    assert!(!info.date.is_empty());
+}
+
 #[cfg(feature = "chrono")]
 #[test]
 fn chrono() {
@@ -780,4 +1174,12 @@ fn rust_decimal() {
     }
     let got: Decimal = conn.query_row("VALUES 12", (), |r| r.get(0)).unwrap();
     assert_eq!(got, Decimal::from(12));
+
+    // A DECFLOAT, which may have an exponent.
+    for (sql, want) in [("1.25", "1.25"), ("1.5E20", "150000000000000000000")] {
+        let got: Decimal = conn
+            .query_row(&format!("VALUES CAST({sql} AS DECFLOAT)"), (), |r| r.get(0))
+            .unwrap();
+        assert_eq!(got, Decimal::from_str(want).unwrap(), "{sql}");
+    }
 }
