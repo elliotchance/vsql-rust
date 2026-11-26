@@ -234,6 +234,12 @@ fn bind_and_execute(stmt: SQLHSTMT, params: &mut [Param], inds: &mut [SQLINTEGER
             }
             ParamValue::BigInt(v) => (v as *mut SQLBIGINT as SQLPOINTER, 8),
             ParamValue::Double(v) => (v as *mut SQLDOUBLE as SQLPOINTER, 8),
+            // libvsql needs the length of a string to be greater than zero,
+            // so an empty string is a null terminated one instead.
+            ParamValue::Text(s) if s.is_empty() => {
+                *ind = SQL_NTS;
+                (b"\0".as_ptr() as SQLPOINTER, 0)
+            }
             ParamValue::Text(s) => {
                 *ind = length(s.len(), "parameter")?;
                 (s.as_mut_ptr() as SQLPOINTER, *ind)

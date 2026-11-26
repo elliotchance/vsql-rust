@@ -136,8 +136,8 @@ impl Connection {
     /// it's committed. Statements are executed in the transaction through it
     /// (it dereferences to the [`Connection`]).
     ///
-    /// vsql's transactions are READ COMMITTED, so a stricter isolation level
-    /// or a read only transaction is an error.
+    /// A READ UNCOMMITTED transaction is always read only (READ WRITE can't be
+    /// used with READ UNCOMMITTED), see [`IsolationLevel`].
     ///
     /// ```
     /// # fn main() -> vsql::Result<()> {
@@ -151,11 +151,12 @@ impl Connection {
     /// # }
     /// ```
     pub fn transaction_with(&mut self, options: TransactionOptions) -> Result<Transaction<'_>> {
-        let access_mode = if options.read_only {
-            SQL_TRANSACTION_READ_ONLY
-        } else {
-            SQL_TRANSACTION_READ_WRITE
-        };
+        let access_mode =
+            if options.read_only || options.isolation_level == IsolationLevel::ReadUncommitted {
+                SQL_TRANSACTION_READ_ONLY
+            } else {
+                SQL_TRANSACTION_READ_WRITE
+            };
         raw::start_tran(self.dbc, access_mode, options.isolation_level.code())?;
         self.in_transaction.set(true);
 
@@ -210,7 +211,8 @@ impl std::fmt::Debug for Connection {
 }
 
 /// The isolation level of a transaction. vsql's transactions are READ
-/// COMMITTED.
+/// COMMITTED or SERIALIZABLE: READ UNCOMMITTED is READ COMMITTED (and read
+/// only), and REPEATABLE READ is SERIALIZABLE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum IsolationLevel {

@@ -52,7 +52,10 @@ tx.execute("INSERT INTO foo (x) VALUES (?)", [2])?;
 tx.commit()?; // Or it's rolled back when it's dropped.
 ```
 
-vsql's transactions are `READ COMMITTED`.
+Transactions are `READ COMMITTED` unless another isolation level (or a read
+only transaction) is given with `transaction_with`. vsql's transactions are
+`READ COMMITTED` or `SERIALIZABLE`: `READ UNCOMMITTED` is `READ COMMITTED` (and
+read only), and `REPEATABLE READ` is `SERIALIZABLE`.
 
 ## Types
 

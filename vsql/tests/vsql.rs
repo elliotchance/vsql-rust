@@ -168,12 +168,8 @@ fn column_values() {
     }
 }
 
-/// vsql drops the leading zeros of fractional seconds
-/// (https://github.com/elliotchance/vsql/issues/697). This test fails once
-/// it's fixed, so the `should_panic` can be removed when the amalgamation is
-/// updated.
+/// https://github.com/elliotchance/vsql/issues/697
 #[test]
-#[should_panic(expected = "vsql#697")]
 fn fractional_seconds_with_leading_zeros() {
     let conn = memory();
     let t: Timestamp = conn
@@ -621,22 +617,24 @@ fn transactions() {
 #[test]
 fn isolation_levels() {
     let mut conn = memory();
-    for level in [
-        IsolationLevel::ReadUncommitted,
-        IsolationLevel::ReadCommitted,
+    conn.execute("CREATE TABLE foo (x INTEGER)", ()).unwrap();
+    let insert = "INSERT INTO foo (x) VALUES (1)";
+    let level = |level| TransactionOptions::default().isolation_level(level);
+    for (options, read_only) in [
+        (level(IsolationLevel::ReadUncommitted), true),
+        (level(IsolationLevel::ReadCommitted), false),
+        (level(IsolationLevel::RepeatableRead), false),
+        (level(IsolationLevel::Serializable), false),
+        (TransactionOptions::default().read_only(true), true),
     ] {
-        let options = TransactionOptions::default().isolation_level(level);
-        conn.transaction_with(options).unwrap().rollback().unwrap();
-    }
-    for options in [
-        TransactionOptions::default().isolation_level(IsolationLevel::RepeatableRead),
-        TransactionOptions::default().isolation_level(IsolationLevel::Serializable),
-        TransactionOptions::default().read_only(true),
-    ] {
-        assert_eq!(
-            sqlstate(conn.transaction_with(options).map(|_| ())),
-            "HYC00"
-        );
+        let tx = conn.transaction_with(options).unwrap();
+        let result = tx.execute(insert, ());
+        if read_only {
+            assert_eq!(sqlstate(result), "25006", "{options:?}");
+        } else {
+            assert_eq!(result.unwrap(), 1, "{options:?}");
+        }
+        tx.rollback().unwrap();
         assert!(conn.is_autocommit());
     }
 }

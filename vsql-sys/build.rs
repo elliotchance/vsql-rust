@@ -1,6 +1,8 @@
 // build.rs compiles libvsql from the amalgamation (see
-// scripts/update-amalgamation.sh) with the defines and libraries that V used
-// for the target OS and architecture (build_flags.rs).
+// scripts/update-amalgamation.sh) and links the libraries that V used for the
+// target OS and architecture (build_flags.rs). amalgamation/libvsql.c has the C
+// for every OS and architecture, and defines what the garbage collector and the
+// platform need itself.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -28,27 +30,22 @@ fn main() {
         other => panic!("vsql isn't supported on {other}"),
     };
     let os_arch = format!("{os}_{arch}");
-    let (_, defines, libraries) = BUILD_FLAGS
+    let (_, libraries) = BUILD_FLAGS
         .iter()
-        .find(|(name, _, _)| *name == os_arch)
+        .find(|(name, _)| *name == os_arch)
         .unwrap_or_else(|| panic!("there's no libvsql C for {os_arch}"));
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("amalgamation");
     let mut build = cc::Build::new();
     build
-        // The garbage collector and V's helpers have to be compiled separately
-        // from libvsql.c (see amalgamation/vsql_runtime.c).
         .file(dir.join("libvsql.c"))
-        .file(dir.join("vsql_runtime.c"))
         .include(&dir)
         .warnings(false)
-        .debug(false);
-    for define in *defines {
-        match define.split_once('=') {
-            Some((name, value)) => build.define(name, value),
-            None => build.define(define, None),
-        };
-    }
+        .debug(false)
+        // The C that V generates relies on signed overflow wrapping, and causes
+        // many warnings.
+        .flag("-fwrapv")
+        .flag("-w");
 
     let msvc = env::var("CARGO_CFG_TARGET_ENV").unwrap() == "msvc";
     if msvc {
@@ -56,14 +53,8 @@ fn main() {
         // which MSVC can't compile, so it's compiled with clang-cl. For clang
         // on Windows, it doesn't include stdio.h. It declares the printf
         // functions itself, which the Universal CRT defines inline, so they're
-        // linked from legacy_stdio_definitions. And it defines the buffering
-        // modes for setvbuf with glibc's values unless they're already defined,
-        // which the Universal CRT rejects (as an invalid parameter, which kills
-        // the process).
+        // linked from legacy_stdio_definitions.
         build.compiler(clang_cl());
-        build.define("_IOFBF", "0x0000");
-        build.define("_IOLBF", "0x0040");
-        build.define("_IONBF", "0x0004");
         println!("cargo:rustc-link-lib=legacy_stdio_definitions");
     } else {
         build.flag("-std=gnu11");
