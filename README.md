@@ -171,6 +171,10 @@ cargo test --all-features
 Or give a version (`scripts/update-amalgamation.sh v1.2.3`), or a zip that has
 already been downloaded.
 
+`vsql-sys/src/lib.rs` declares everything in `amalgamation/libvsql.h` by hand.
+If the new header adds (or changes) a type, constant or routine, the `header`
+test of `vsql-sys` fails until `lib.rs` is updated to match.
+
 ## Releasing
 
 Publish a GitHub release with the tag `vVERSION` (such as `v1.0.1`). The
