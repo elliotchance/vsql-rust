@@ -91,8 +91,8 @@ already in a transaction.
 | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)            |
 | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                                   |
 | `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, `rust_decimal::Decimal`, any integer type (if it's an integer in range) |
-| `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                                       |
-| `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]` (`&[u8]` as a parameter)  |
+| `CHARACTER`, `VARCHAR`, `CLOB`   | `String`, `Box<str>`, `Rc<str>`, `Arc<str>`, `Cow<str>`, `char` (one character) |
+| `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]`, `Box<[u8]>`, `Rc<[u8]>`, `Arc<[u8]>`, `Cow<[u8]>` (`&[u8]` as a parameter) |
 | `BOOLEAN`                        | `bool`                                         |
 | `DATE`                           | `vsql::Date`, `chrono::NaiveDate`, `time::Date` |
 | `TIME`                           | `vsql::Time`, `chrono::NaiveTime`, `time::Time` |
@@ -121,8 +121,14 @@ let i: vsql::Interval = conn.query_row("VALUES CAST(? AS INTERVAL HOUR TO MINUTE
 println!("{i}"); // INTERVAL '1:30' HOUR(2) TO MINUTE
 ```
 
-A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
-`chrono`, `time` and `rust_decimal` types need those features:
+A `NULL` is an `Option`, and any value can be read as a `vsql::Value`, or
+borrowed without a copy:
+
+```rust
+let name: Option<&str> = row.get_ref("name")?.as_str();
+```
+
+The `chrono`, `time` and `rust_decimal` types need those features:
 
 ```toml
 vsql = { version = "1", features = ["chrono", "time", "rust_decimal"] }

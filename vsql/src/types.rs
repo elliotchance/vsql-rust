@@ -1,8 +1,11 @@
 //! Converting between Rust and SQL values.
 
+use std::borrow::Cow;
 use std::error;
 use std::fmt;
+use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use vsql_sys::*;
@@ -590,6 +593,177 @@ pub enum Value {
     Interval(Interval),
 }
 
+/// Borrowed access to a value, without converting it (see [`FromSql`] for
+/// conversions). Each is None if the value is another variant.
+///
+/// ```
+/// # fn main() -> vsql::Result<()> {
+/// let conn = vsql::Connection::open_in_memory()?;
+/// let row = conn.query_row("VALUES ROW('a', 1, CAST(NULL AS INTEGER))", (), |row| Ok(row.clone()))?;
+/// assert_eq!(row.get_ref(0)?.as_str(), Some("a"));
+/// assert_eq!(row.get_ref(1)?.as_i64(), Some(1));
+/// assert!(row.get_ref(2)?.is_null());
+/// # Ok(())
+/// # }
+/// ```
+impl Value {
+    /// Whether it's NULL.
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
+    }
+
+    /// A BOOLEAN.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Boolean(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// A SMALLINT, INTEGER or BIGINT.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Integer(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// A REAL or DOUBLE PRECISION.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Double(d) => Some(*d),
+            _ => None,
+        }
+    }
+
+    /// A CHARACTER, CHARACTER VARYING or CHARACTER LARGE OBJECT.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The decimal string of a DECIMAL, NUMERIC or DECFLOAT, such as
+    /// `"-1.25"` or `"1.5E+20"`.
+    pub fn as_decimal_str(&self) -> Option<&str> {
+        match self {
+            Value::Numeric(s) | Value::DecFloat(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// A BINARY, BINARY VARYING or BINARY LARGE OBJECT.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::Binary(b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    /// The value for printing: `NULL`, `TRUE` or `FALSE`, a number, the
+    /// characters of a string (not quoted), a binary string as hexadecimal
+    /// such as `X'0AFF'`, a datetime such as `2022-01-02 15:04:05.000000`
+    /// (see [`Date`], [`Time`] and [`Timestamp`]), or an interval literal
+    /// (see [`Interval`]).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => f.write_str("NULL"),
+            Value::Boolean(true) => f.write_str("TRUE"),
+            Value::Boolean(false) => f.write_str("FALSE"),
+            Value::Integer(i) => i.fmt(f),
+            Value::Double(d) => d.fmt(f),
+            Value::Numeric(s) | Value::DecFloat(s) | Value::Text(s) => f.write_str(s),
+            Value::Binary(b) => {
+                f.write_str("X'")?;
+                for byte in b {
+                    write!(f, "{byte:02X}")?;
+                }
+                f.write_str("'")
+            }
+            Value::Date(d) => d.fmt(f),
+            Value::Time(t) => t.fmt(f),
+            Value::Timestamp(t) => t.fmt(f),
+            Value::Interval(i) => i.fmt(f),
+        }
+    }
+}
+
+macro_rules! value_from {
+    ($($t:ty => $variant:ident),* $(,)?) => {$(
+        impl From<$t> for Value {
+            fn from(v: $t) -> Value {
+                Value::$variant(v.into())
+            }
+        }
+    )*};
+}
+
+value_from!(
+    bool => Boolean,
+    i8 => Integer,
+    i16 => Integer,
+    i32 => Integer,
+    i64 => Integer,
+    u8 => Integer,
+    u16 => Integer,
+    u32 => Integer,
+    f32 => Double,
+    f64 => Double,
+    String => Text,
+    &str => Text,
+    Box<str> => Text,
+    Cow<'_, str> => Text,
+    char => Text,
+    Vec<u8> => Binary,
+    &[u8] => Binary,
+    Box<[u8]> => Binary,
+    Cow<'_, [u8]> => Binary,
+    Date => Date,
+    Time => Time,
+    Timestamp => Timestamp,
+    Interval => Interval,
+);
+
+macro_rules! value_from_large_integer {
+    ($($t:ty),*) => {$(
+        /// A [`Value::Integer`], or a [`Value::Numeric`] if it's out of the
+        /// range of an `i64` (like [`ToSql`]).
+        impl From<$t> for Value {
+            fn from(v: $t) -> Value {
+                match i64::try_from(v) {
+                    Ok(i) => Value::Integer(i),
+                    Err(_) => Value::Numeric(v.to_string()),
+                }
+            }
+        }
+    )*};
+}
+
+value_from_large_integer!(i128, isize, u64, u128, usize);
+
+impl<const N: usize> From<[u8; N]> for Value {
+    fn from(v: [u8; N]) -> Value {
+        Value::Binary(v.to_vec())
+    }
+}
+
+/// [`Value::Null`] for None.
+///
+/// ```
+/// use vsql::Value;
+///
+/// assert_eq!(Value::from(Some(1)), Value::Integer(1));
+/// assert_eq!(Value::from(None::<&str>), Value::Null);
+/// ```
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(v: Option<T>) -> Value {
+        v.map_or(Value::Null, Into::into)
+    }
+}
+
 /// How a column is read with SQLGetData.
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
@@ -795,6 +969,24 @@ impl<T: ToSql + ?Sized> ToSql for Box<T> {
     }
 }
 
+impl<T: ToSql + ?Sized> ToSql for Rc<T> {
+    fn to_sql(&self) -> Result<Value> {
+        (**self).to_sql()
+    }
+}
+
+impl<T: ToSql + ?Sized> ToSql for Arc<T> {
+    fn to_sql(&self) -> Result<Value> {
+        (**self).to_sql()
+    }
+}
+
+impl<T: ToSql + ToOwned + ?Sized> ToSql for Cow<'_, T> {
+    fn to_sql(&self) -> Result<Value> {
+        (**self).to_sql()
+    }
+}
+
 impl ToSql for Value {
     fn to_sql(&self) -> Result<Value> {
         Ok(self.clone())
@@ -837,6 +1029,12 @@ impl ToSql for f64 {
 }
 
 impl ToSql for str {
+    fn to_sql(&self) -> Result<Value> {
+        Ok(Value::Text(self.to_string()))
+    }
+}
+
+impl ToSql for char {
     fn to_sql(&self) -> Result<Value> {
         Ok(Value::Text(self.to_string()))
     }
@@ -1065,6 +1263,37 @@ impl FromSql for String {
     }
 }
 
+macro_rules! from_sql_string {
+    ($($t:ty),*) => {$(
+        /// See String.
+        impl FromSql for $t {
+            fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+                String::from_sql(value).map(Into::into)
+            }
+        }
+    )*};
+}
+
+from_sql_string!(Box<str>, Rc<str>, Arc<str>, Cow<'static, str>);
+
+/// A CHARACTER, CHARACTER VARYING or CHARACTER LARGE OBJECT of one character.
+impl FromSql for char {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Text(s) => {
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Ok(c),
+                    _ => Err(FromSqlError::Other(
+                        format!("{s:?} isn't one character").into(),
+                    )),
+                }
+            }
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
 impl FromSql for Date {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         match value {
@@ -1101,6 +1330,19 @@ impl FromSql for Vec<u8> {
         }
     }
 }
+
+macro_rules! from_sql_binary {
+    ($($t:ty),*) => {$(
+        /// See `Vec<u8>`.
+        impl FromSql for $t {
+            fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+                Vec::<u8>::from_sql(value).map(Into::into)
+            }
+        }
+    )*};
+}
+
+from_sql_binary!(Box<[u8]>, Rc<[u8]>, Arc<[u8]>, Cow<'static, [u8]>);
 
 /// A BINARY, BINARY VARYING or BINARY LARGE OBJECT of N octets.
 impl<const N: usize> FromSql for [u8; N] {

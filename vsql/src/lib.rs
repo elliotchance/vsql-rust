@@ -55,8 +55,8 @@
 //! | `i8` to `i64`, `u8` to `u32`          | `BIGINT`                                   |
 //! | `u64`, `i128`, `u128`                 | `BIGINT` (`NUMERIC` if it's out of range)  |
 //! | `f32`, `f64`                          | `DOUBLE PRECISION`                         |
-//! | `&str`, `String`                      | `CHARACTER VARYING` (`CLOB` if it's longer than 10,485,760) |
-//! | `&[u8]`, `Vec<u8>`, `[u8; N]`         | `BINARY VARYING` (`BLOB` if it's longer than 10,485,760) |
+//! | `&str`, `String`, `char`, `Cow<str>`, `Box<str>`, `Rc<str>`, `Arc<str>` | `CHARACTER VARYING` (`CLOB` if it's longer than 10,485,760) |
+//! | `&[u8]`, `Vec<u8>`, `[u8; N]`, `Cow<[u8]>` | `BINARY VARYING` (`BLOB` if it's longer than 10,485,760) |
 //! | [`Date`]                              | `DATE`                                     |
 //! | [`Time`]                              | `TIME(6)` (`WITH TIME ZONE` with an offset) |
 //! | [`Timestamp`]                         | `TIMESTAMP(6)` (`WITH TIME ZONE` with an offset) |
@@ -72,8 +72,8 @@
 //! | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)  |
 //! | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                         |
 //! | `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, any integer type (if it's an integer in range) |
-//! | `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                             |
-//! | `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]`                 |
+//! | `CHARACTER`, `VARCHAR`, `CLOB`   | `String`, `Box<str>`, `Rc<str>`, `Arc<str>`, `Cow<str>`, `char` (one character) |
+//! | `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]`, `Box<[u8]>`, `Rc<[u8]>`, `Arc<[u8]>`, `Cow<[u8]>` |
 //! | `BOOLEAN`                        | `bool`                               |
 //! | `DATE`                           | [`Date`]                             |
 //! | `TIME (WITH TIME ZONE)`          | [`Time`]                             |
@@ -83,6 +83,11 @@
 //! A `NULL` is only an `Option`. Any column can be read as a [`Value`]. An
 //! integer that's out of the range of a `BIGINT` (such as a large `u64`) is
 //! sent as a `NUMERIC`, so it can be read back as the same type.
+//!
+//! A value can be borrowed without converting it with [`Row::get_ref`] and
+//! [`Value`]'s accessors, such as [`Value::as_str`] and [`Value::as_bytes`].
+//! A [`Value`] can be made with `From` (such as `Value::from("a")`), and
+//! printed with `Display`.
 //!
 //! # Features
 //!
