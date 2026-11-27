@@ -47,6 +47,10 @@ pub enum Error {
 
     /// `query_row` returned no rows.
     QueryReturnedNoRows,
+
+    /// A savepoint that's still active has the name (see
+    /// [`Transaction::savepoint_with_name`](crate::Transaction::savepoint_with_name)).
+    SavepointNameInUse(String),
 }
 
 impl Error {
@@ -126,6 +130,9 @@ impl fmt::Display for Error {
                 source,
             } => write!(f, "column {index} ({name}, {ty}): {source}"),
             Error::QueryReturnedNoRows => f.write_str("the query returned no rows"),
+            Error::SavepointNameInUse(name) => {
+                write!(f, "a savepoint that's still active is named {name:?}")
+            }
         }
     }
 }

@@ -1040,6 +1040,55 @@ fn savepoints() {
 }
 
 #[test]
+fn savepoint_names() {
+    let mut conn = memory();
+    conn.execute("CREATE TABLE foo (x INTEGER)", ()).unwrap();
+    let insert = |conn: &Connection, value: i64| {
+        conn.execute("INSERT INTO foo (x) VALUES (?)", [value])
+            .unwrap();
+    };
+    let count = |conn: &Connection| -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM foo", (), |r| r.get(0))
+            .unwrap()
+    };
+
+    let mut tx = conn.transaction().unwrap();
+    {
+        // A name that's the same as a generated one (VSQL_SP_2 for the
+        // savepoint in this one).
+        let mut outer = tx.savepoint_with_name("VSQL_SP_2").unwrap();
+        insert(&outer, 1);
+        {
+            let mut inner = outer.savepoint().unwrap();
+            insert(&inner, 2);
+            // A name that's in use (by a generated name, or a given one).
+            assert!(matches!(
+                inner.savepoint_with_name("VSQL_SP_2"),
+                Err(Error::SavepointNameInUse(name)) if name == "VSQL_SP_2"
+            ));
+            let mut sp = inner.savepoint_with_name("sp").unwrap();
+            assert!(matches!(
+                sp.savepoint_with_name("sp"),
+                Err(Error::SavepointNameInUse(_))
+            ));
+        } // Rolled back to, which leaves outer.
+        assert_eq!(count(&outer), 1);
+        outer.rollback().unwrap();
+        assert_eq!(count(&outer), 0);
+        insert(&outer, 3);
+        outer.commit().unwrap();
+    }
+    // A name can be used again once its savepoint is released.
+    {
+        let sp = tx.savepoint_with_name("VSQL_SP_2").unwrap();
+        insert(&sp, 4);
+        sp.commit().unwrap();
+    }
+    tx.commit().unwrap();
+    assert_eq!(count(&conn), 2);
+}
+
+#[test]
 fn diagnostics() {
     let conn = memory();
     conn.execute(

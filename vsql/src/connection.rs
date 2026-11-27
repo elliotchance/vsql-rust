@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::Path;
@@ -23,6 +23,8 @@ pub struct Connection {
     env: SQLHENV,
     dbc: SQLHDBC,
     in_transaction: Cell<bool>,
+    // The names (as they are in SQL) of the savepoints that are active.
+    savepoints: RefCell<Vec<String>>,
     // Not Sync, since a libvsql environment runs one routine at a time and has
     // one transaction.
     _not_sync: PhantomData<Cell<()>>,
@@ -65,6 +67,7 @@ impl Connection {
             env,
             dbc,
             in_transaction: Cell::new(false),
+            savepoints: RefCell::new(Vec::new()),
             _not_sync: PhantomData,
         };
         raw::set_autocommit(dbc, true)?;
@@ -185,7 +188,9 @@ impl Connection {
     }
 
     /// The same as [`savepoint`](Connection::savepoint), with a name for the
-    /// savepoint (which is quoted, so it can be any string).
+    /// savepoint (which is quoted, so it can be any string). It's
+    /// [`Error::SavepointNameInUse`] if a savepoint that's still active has the
+    /// name.
     pub fn savepoint_with_name<T: Into<String>>(&mut self, name: T) -> Result<Savepoint<'_>> {
         self.start_transaction(TransactionOptions::default())?;
         Savepoint::start(self, 1, Some(name.into()), true)
@@ -206,6 +211,7 @@ impl Connection {
 
     fn end_transaction(&self, commit: bool) -> Result<()> {
         self.in_transaction.set(false);
+        self.savepoints.borrow_mut().clear();
 
         raw::end_tran(self.dbc, commit)
     }
@@ -229,6 +235,7 @@ impl Connection {
 
         let mut result = Ok(());
         if self.in_transaction.replace(false) {
+            self.savepoints.borrow_mut().clear();
             result = result.and(raw::end_tran(self.dbc, false));
         }
         result = result.and(raw::disconnect(self.dbc));
@@ -323,7 +330,9 @@ impl Transaction<'_> {
     }
 
     /// The same as [`savepoint`](Transaction::savepoint), with a name for the
-    /// savepoint (which is quoted, so it can be any string).
+    /// savepoint (which is quoted, so it can be any string). It's
+    /// [`Error::SavepointNameInUse`] if a savepoint that's still active has the
+    /// name.
     pub fn savepoint_with_name<T: Into<String>>(&mut self, name: T) -> Result<Savepoint<'_>> {
         Savepoint::start(self.conn, 1, Some(name.into()), false)
     }
@@ -397,9 +406,30 @@ impl Savepoint<'_> {
         name: Option<String>,
         ends_transaction: bool,
     ) -> Result<Savepoint<'_>> {
+        // A savepoint with the same name as an active one would replace it,
+        // so a name that's given can't be in use, and a generated one is the
+        // first that isn't.
+        let in_use = |sql_name: &str| conn.savepoints.borrow().iter().any(|n| n == sql_name);
         let name = match name {
-            Some(name) => format!("\"{}\"", name.replace('"', "\"\"")),
-            None => format!("VSQL_SP_{depth}"),
+            Some(name) => {
+                let sql_name = format!("\"{}\"", name.replace('"', "\"\""));
+                // A quoted name that's an upper case identifier is the same
+                // as the identifier without quotes.
+                if in_use(&sql_name) || in_use(&name) {
+                    if ends_transaction {
+                        let _ = conn.end_transaction(false);
+                    }
+                    return Err(Error::SavepointNameInUse(name));
+                }
+                sql_name
+            }
+            None => (0..)
+                .map(|n| match n {
+                    0 => format!("VSQL_SP_{depth}"),
+                    n => format!("VSQL_SP_{depth}_{n}"),
+                })
+                .find(|name| !in_use(name) && !in_use(&format!("\"{name}\"")))
+                .expect("a savepoint name"),
         };
         if let Err(e) = conn.execute(&format!("SAVEPOINT {name}"), ()) {
             if ends_transaction {
@@ -407,6 +437,7 @@ impl Savepoint<'_> {
             }
             return Err(e);
         }
+        conn.savepoints.borrow_mut().push(name.clone());
 
         Ok(Savepoint {
             conn,
@@ -423,7 +454,9 @@ impl Savepoint<'_> {
     }
 
     /// The same as [`savepoint`](Savepoint::savepoint), with a name for the
-    /// savepoint (which is quoted, so it can be any string).
+    /// savepoint (which is quoted, so it can be any string). It's
+    /// [`Error::SavepointNameInUse`] if a savepoint that's still active has the
+    /// name.
     pub fn savepoint_with_name<T: Into<String>>(&mut self, name: T) -> Result<Savepoint<'_>> {
         Savepoint::start(self.conn, self.depth + 1, Some(name.into()), false)
     }
@@ -434,7 +467,16 @@ impl Savepoint<'_> {
         if self.ends_transaction {
             self.conn.end_transaction(true)
         } else {
+            self.forget();
             raw::end_savepoint(self.conn.dbc, &self.name, true)
+        }
+    }
+
+    /// Removes the savepoint from the active ones, before it's released.
+    fn forget(&self) {
+        let mut savepoints = self.conn.savepoints.borrow_mut();
+        if let Some(i) = savepoints.iter().rposition(|n| *n == self.name) {
+            savepoints.remove(i);
         }
     }
 
@@ -461,6 +503,7 @@ impl Drop for Savepoint<'_> {
         if self.ends_transaction {
             let _ = self.conn.end_transaction(false);
         } else {
+            self.forget();
             let _ = self.rollback();
             let _ = raw::end_savepoint(self.conn.dbc, &self.name, true);
         }
