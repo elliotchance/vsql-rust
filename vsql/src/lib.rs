@@ -106,6 +106,7 @@
 
 mod connection;
 mod error;
+mod optional;
 mod params;
 mod raw;
 mod sql;
@@ -122,7 +123,8 @@ mod with_time;
 
 pub use connection::{Connection, IsolationLevel, Savepoint, Transaction, TransactionOptions};
 pub use error::{Diagnostics, Error, Result};
+pub use optional::OptionalExtension;
 pub use params::{params_from_iter, Params, ParamsFromIter};
-pub use statement::{Column, MappedRows, Row, RowIndex, Rows, Statement};
+pub use statement::{AndThenRows, Column, MappedRows, Row, RowIndex, Rows, Statement};
 pub use types::{Date, FromSql, Interval, IntervalFields, Time, Timestamp, ToSql, Type, Value};
 pub use version::{build_info, version, version_number, BuildInfo};

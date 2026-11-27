@@ -93,6 +93,16 @@ impl<'conn> Statement<'conn> {
         Rows::new(self.stmt)
     }
 
+    /// The same as [`query`](Statement::query), but the rows own the
+    /// statement, so they can be returned from a function.
+    pub(crate) fn into_rows<P: Params>(mut self, params: P) -> Result<Rows<'conn>> {
+        self.run(params.to_values()?)?;
+
+        let mut rows = Rows::new(self.stmt)?;
+        rows.owner = Some(self);
+        Ok(rows)
+    }
+
     /// Executes the query and maps each row with `f`.
     ///
     /// ```
@@ -129,6 +139,76 @@ impl<'conn> Statement<'conn> {
             Some(Err(e)) => Err(e),
             None => Err(Error::QueryReturnedNoRows),
         }
+    }
+
+    /// Executes the query and returns `f` of its first row, or
+    /// [`Error::QueryReturnedNoRows`]. `f` can return any error that a vsql
+    /// [`Error`] converts into.
+    pub fn query_row_and_then<T, E, P, F>(&mut self, params: P, f: F) -> Result<T, E>
+    where
+        P: Params,
+        E: From<Error>,
+        F: FnOnce(&Row) -> Result<T, E>,
+    {
+        match self.query(params)?.next().transpose()? {
+            Some(row) => f(&row),
+            None => Err(Error::QueryReturnedNoRows.into()),
+        }
+    }
+
+    /// Executes the query and maps each row with `f`, which can return any
+    /// error that a vsql [`Error`] converts into.
+    ///
+    /// ```
+    /// #[derive(Debug)]
+    /// enum MyError {
+    ///     Vsql(vsql::Error),
+    ///     Negative(i64),
+    /// }
+    ///
+    /// impl From<vsql::Error> for MyError {
+    ///     fn from(e: vsql::Error) -> MyError {
+    ///         MyError::Vsql(e)
+    ///     }
+    /// }
+    ///
+    /// # fn main() -> Result<(), MyError> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// let mut stmt = conn.prepare("VALUES 1, -2, 3")?;
+    /// let xs: Vec<Result<u64, MyError>> = stmt
+    ///     .query_and_then((), |row| {
+    ///         let x: i64 = row.get(0)?;
+    ///         u64::try_from(x).map_err(|_| MyError::Negative(x))
+    ///     })?
+    ///     .collect();
+    /// assert!(matches!(xs[1], Err(MyError::Negative(-2))));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_and_then<T, E, P, F>(&mut self, params: P, f: F) -> Result<AndThenRows<'_, F>>
+    where
+        P: Params,
+        E: From<Error>,
+        F: FnMut(&Row) -> Result<T, E>,
+    {
+        Ok(self.query(params)?.and_then(f))
+    }
+
+    /// Whether the query returns at least one row.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+    /// conn.execute("INSERT INTO foo (x) VALUES (1)", ())?;
+    /// let mut stmt = conn.prepare("SELECT * FROM foo WHERE x = ?")?;
+    /// assert!(stmt.exists([1])?);
+    /// assert!(!stmt.exists([2])?);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn exists<P: Params>(&mut self, params: P) -> Result<bool> {
+        Ok(self.query(params)?.next().transpose()?.is_some())
     }
 
     /// The number of parameters (`?`) of the statement.
@@ -287,17 +367,21 @@ pub struct Rows<'stmt> {
     kinds: Vec<Kind>,
     buf: Vec<u8>,
     open: bool,
+    // The statement, when the rows own it (see Connection::query). It's
+    // dropped (and freed) after the cursor is closed.
+    owner: Option<Statement<'stmt>>,
     _stmt: PhantomData<&'stmt mut ()>,
 }
 
-impl Rows<'_> {
-    fn new<'stmt>(stmt: SQLHSTMT) -> Result<Rows<'stmt>> {
+impl<'stmt> Rows<'stmt> {
+    fn new(stmt: SQLHSTMT) -> Result<Rows<'stmt>> {
         let mut rows = Rows {
             stmt,
             columns: Arc::new([]),
             kinds: Vec::new(),
             buf: Vec::new(),
             open: true,
+            owner: None,
             _stmt: PhantomData,
         };
 
@@ -327,6 +411,37 @@ impl Rows<'_> {
     /// The names of the columns.
     pub fn column_names(&self) -> Vec<&str> {
         self.columns.iter().map(Column::name).collect()
+    }
+
+    /// Maps each row with `f`.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// let mut stmt = conn.prepare("VALUES 1, 2, 3")?;
+    /// let rows = stmt.query(())?;
+    /// let xs = rows
+    ///     .mapped(|row| row.get::<_, i64>(0))
+    ///     .collect::<vsql::Result<Vec<_>>>()?;
+    /// assert_eq!(xs, [1, 2, 3]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn mapped<T, F>(self, f: F) -> MappedRows<'stmt, F>
+    where
+        F: FnMut(&Row) -> Result<T>,
+    {
+        MappedRows { rows: self, f }
+    }
+
+    /// Maps each row with `f`, which can return any error that a vsql
+    /// [`Error`] converts into (see [`Statement::query_and_then`]).
+    pub fn and_then<T, E, F>(self, f: F) -> AndThenRows<'stmt, F>
+    where
+        E: From<Error>,
+        F: FnMut(&Row) -> Result<T, E>,
+    {
+        AndThenRows { rows: self, f }
     }
 
     fn close(&mut self) -> Result<()> {
@@ -421,6 +536,28 @@ where
     fn next(&mut self) -> Option<Result<T>> {
         let f = &mut self.f;
         self.rows.next().map(|row| row.and_then(|row| f(&row)))
+    }
+}
+
+/// The rows of a query mapped by a function that can return any error that a
+/// vsql [`Error`] converts into, see [`Statement::query_and_then`].
+pub struct AndThenRows<'stmt, F> {
+    rows: Rows<'stmt>,
+    f: F,
+}
+
+impl<T, E, F> Iterator for AndThenRows<'_, F>
+where
+    E: From<Error>,
+    F: FnMut(&Row) -> Result<T, E>,
+{
+    type Item = Result<T, E>;
+
+    fn next(&mut self) -> Option<Result<T, E>> {
+        let f = &mut self.f;
+        self.rows
+            .next()
+            .map(|row| row.map_err(E::from).and_then(|row| f(&row)))
     }
 }
 

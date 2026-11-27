@@ -8,7 +8,7 @@ use vsql_sys::*;
 use crate::error::{Error, Result};
 use crate::params::Params;
 use crate::raw;
-use crate::statement::{Row, Statement};
+use crate::statement::{AndThenRows, MappedRows, Row, Rows, Statement};
 
 /// A connection to a database.
 ///
@@ -127,6 +127,79 @@ impl Connection {
         F: FnOnce(&Row) -> Result<T>,
     {
         self.prepare(sql)?.query_row(params, f)
+    }
+
+    /// The same as [`query_row`](Connection::query_row), but `f` can return
+    /// any error that a vsql [`Error`] converts into.
+    pub fn query_row_and_then<T, E, P, F>(&self, sql: &str, params: P, f: F) -> Result<T, E>
+    where
+        P: Params,
+        E: From<Error>,
+        F: FnOnce(&Row) -> Result<T, E>,
+    {
+        self.prepare(sql)?.query_row_and_then(params, f)
+    }
+
+    /// Executes a query, see [`Statement::query`]. The rows own the
+    /// statement, so (unlike `conn.prepare(sql)?.query(params)`) they can be
+    /// returned from a function.
+    ///
+    /// ```
+    /// fn at_most(conn: &vsql::Connection, n: i64) -> vsql::Result<vsql::Rows<'_>> {
+    ///     conn.query("SELECT x FROM foo WHERE x <= ?", [n])
+    /// }
+    ///
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+    /// for x in 1..=5 {
+    ///     conn.execute("INSERT INTO foo (x) VALUES (?)", [x])?;
+    /// }
+    /// assert_eq!(at_most(&conn, 2)?.count(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query<P: Params>(&self, sql: &str, params: P) -> Result<Rows<'_>> {
+        self.prepare(sql)?.into_rows(params)
+    }
+
+    /// Executes a query and maps each row with `f`, see
+    /// [`Statement::query_map`]. The rows own the statement, so they can be
+    /// returned from a function.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// let xs = conn
+    ///     .query_map("VALUES 1, 2, 3", (), |row| row.get::<_, i64>(0))?
+    ///     .collect::<vsql::Result<Vec<_>>>()?;
+    /// assert_eq!(xs, [1, 2, 3]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_map<T, P, F>(&self, sql: &str, params: P, f: F) -> Result<MappedRows<'_, F>>
+    where
+        P: Params,
+        F: FnMut(&Row) -> Result<T>,
+    {
+        Ok(self.query(sql, params)?.mapped(f))
+    }
+
+    /// Executes a query and maps each row with `f`, which can return any error
+    /// that a vsql [`Error`] converts into, see [`Statement::query_and_then`].
+    /// The rows own the statement, so they can be returned from a function.
+    pub fn query_and_then<T, E, P, F>(
+        &self,
+        sql: &str,
+        params: P,
+        f: F,
+    ) -> Result<AndThenRows<'_, F>>
+    where
+        P: Params,
+        E: From<Error>,
+        F: FnMut(&Row) -> Result<T, E>,
+    {
+        Ok(self.query(sql, params)?.and_then(f))
     }
 
     /// Starts a READ COMMITTED (READ WRITE) transaction, see
