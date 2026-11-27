@@ -903,13 +903,78 @@ impl FromSql for bool {
     }
 }
 
+/// The integer of a DECIMAL, NUMERIC or DECFLOAT (which may have an exponent,
+/// such as `"1.5E+20"`) as a sign and digits, which is an error if it has a
+/// fraction.
+fn integer_digits(s: &str) -> Result<String, FromSqlError> {
+    let not_integer = || FromSqlError::Other(format!("{s} isn't an integer").into());
+    let (negative, unsigned) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let (mantissa, exponent) = match unsigned.split_once(['E', 'e']) {
+        Some((mantissa, exponent)) => (
+            mantissa,
+            exponent.parse::<i64>().map_err(|_| not_integer())?,
+        ),
+        None => (unsigned, 0),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if integer.is_empty() && fraction.is_empty()
+        || !integer
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return Err(not_integer());
+    }
+
+    // The digits without leading zeros, with the decimal point after `point`
+    // of them (which may be before or after all of them).
+    let all = format!("{integer}{fraction}");
+    let digits = all.trim_start_matches('0');
+    let leading_zeros = (all.len() - digits.len()) as i64;
+    let point = (integer.len() as i64)
+        .saturating_add(exponent)
+        .saturating_sub(leading_zeros);
+    let (whole, rest) = if point <= 0 {
+        ("", digits)
+    } else if point as usize >= digits.len() {
+        (digits, "")
+    } else {
+        digits.split_at(point as usize)
+    };
+    if rest.bytes().any(|b| b != b'0') {
+        return Err(not_integer());
+    }
+    if whole.is_empty() {
+        return Ok("0".to_string());
+    }
+    // The zeros after the digits. Anything longer than 40 digits is out of the
+    // range of every integer type.
+    if point > 40 {
+        return Err(FromSqlError::OutOfRange);
+    }
+    let zeros = point as usize - whole.len();
+
+    Ok(format!(
+        "{}{whole}{}",
+        if negative { "-" } else { "" },
+        "0".repeat(zeros)
+    ))
+}
+
 macro_rules! from_sql_integer {
     ($($t:ty),*) => {$(
-        /// A SMALLINT, INTEGER or BIGINT that's in range.
+        /// A SMALLINT, INTEGER or BIGINT, or a DECIMAL, NUMERIC or DECFLOAT
+        /// that's an integer, which is in range.
         impl FromSql for $t {
             fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
                 match value {
                     Value::Integer(i) => <$t>::try_from(*i).map_err(|_| FromSqlError::OutOfRange),
+                    Value::Numeric(s) | Value::DecFloat(s) => integer_digits(s)?
+                        .parse()
+                        .map_err(|_| FromSqlError::OutOfRange),
                     _ => Err(FromSqlError::InvalidType),
                 }
             }
@@ -1010,5 +1075,42 @@ impl FromSql for Interval {
             Value::Interval(i) => Ok(*i),
             _ => Err(FromSqlError::InvalidType),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_digits_of_decimals() {
+        for (s, want) in [
+            ("0", "0"),
+            ("-0", "0"),
+            ("0.000", "0"),
+            ("007", "7"),
+            ("+7", "7"),
+            ("-12.00", "-12"),
+            ("100", "100"),
+            ("1.5E+20", "150000000000000000000"),
+            ("1.5e20", "150000000000000000000"),
+            ("0.05E+2", "5"),
+            ("1500E-2", "15"),
+            ("0E+999999", "0"),
+        ] {
+            assert_eq!(integer_digits(s).unwrap(), want, "{s}");
+        }
+        for s in [
+            "1.5", "0.05", "-0.5", "15E-1", "", ".", "1.2.3", "a", "1E", "Infinity", "NaN",
+        ] {
+            assert!(
+                matches!(integer_digits(s), Err(FromSqlError::Other(_))),
+                "{s}"
+            );
+        }
+        assert!(matches!(
+            integer_digits("1E+41"),
+            Err(FromSqlError::OutOfRange)
+        ));
     }
 }

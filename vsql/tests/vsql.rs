@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use vsql::types::FromSqlError;
+use vsql::FromSql;
 use vsql::{
     params, params_from_iter, Connection, Date, Error, Interval, IntervalFields, IsolationLevel,
     Time, Timestamp, TransactionOptions, Type, Value,
@@ -235,6 +236,58 @@ fn rust_types() {
         }) => {}
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn integers_from_decimals() {
+    let conn = memory();
+    conn.execute("CREATE TABLE foo (x NUMERIC(40))", ())
+        .unwrap();
+    let round_trip = |sql_value: &dyn vsql::ToSql| -> Value {
+        conn.execute("DELETE FROM foo", ()).unwrap();
+        conn.execute("INSERT INTO foo (x) VALUES (?)", [sql_value])
+            .unwrap();
+        conn.query_row("SELECT x FROM foo", (), |r| r.get(0))
+            .unwrap()
+    };
+
+    // Integers that don't fit in a BIGINT are a NUMERIC, and can be read
+    // back.
+    let value = round_trip(&u64::MAX);
+    assert_eq!(u64::from_sql(&value).unwrap(), u64::MAX);
+    assert_eq!(i128::from_sql(&value).unwrap(), i128::from(u64::MAX));
+    assert!(matches!(
+        i64::from_sql(&value),
+        Err(FromSqlError::OutOfRange)
+    ));
+    assert_eq!(i128::from_sql(&round_trip(&i128::MIN)).unwrap(), i128::MIN);
+    assert_eq!(u128::from_sql(&round_trip(&u128::MAX)).unwrap(), u128::MAX);
+    assert!(matches!(
+        u64::from_sql(&round_trip(&-1)),
+        Err(FromSqlError::OutOfRange)
+    ));
+
+    for (sql, want) in [
+        ("VALUES CAST(5 AS NUMERIC(10))", 5),
+        ("VALUES CAST(-5.00 AS DECIMAL(10, 2))", -5),
+        ("VALUES CAST(1.5E+3 AS DECFLOAT)", 1500),
+        ("SELECT AVG(x) FROM (VALUES 2, 4) AS t (x)", 3),
+    ] {
+        let got: i64 = conn
+            .query_row(sql, (), |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+        assert_eq!(got, want, "{sql}");
+    }
+
+    let err = conn
+        .query_row("VALUES CAST(5.25 AS NUMERIC(10, 2))", (), |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "column 0 (COL1, NUMERIC): 5.25 isn't an integer"
+    );
 }
 
 #[test]

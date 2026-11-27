@@ -60,7 +60,7 @@
 //! |----------------------------------|--------------------------------------|
 //! | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)  |
 //! | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                         |
-//! | `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`              |
+//! | `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, any integer type (if it's an integer in range) |
 //! | `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                             |
 //! | `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]`                 |
 //! | `BOOLEAN`                        | `bool`                               |
@@ -69,7 +69,9 @@
 //! | `TIMESTAMP (WITH TIME ZONE)`     | [`Timestamp`]                        |
 //! | `INTERVAL ...`                   | [`Interval`]                         |
 //!
-//! A `NULL` is only an `Option`. Any column can be read as a [`Value`].
+//! A `NULL` is only an `Option`. Any column can be read as a [`Value`]. An
+//! integer that's out of the range of a `BIGINT` (such as a large `u64`) is
+//! sent as a `NUMERIC`, so it can be read back as the same type.
 //!
 //! # Features
 //!
