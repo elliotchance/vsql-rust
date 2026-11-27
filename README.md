@@ -101,6 +101,17 @@ assert_eq!(i.microseconds, 26 * 3600 * 1_000_000);
 println!("{i}"); // INTERVAL '1 02' DAY(2) TO HOUR
 ```
 
+A day-time interval is also a `std::time::Duration` (if it isn't negative) or
+a `chrono::Duration`, and a year-month interval is a `chrono::Months`. As a
+parameter, these are a `DAY TO SECOND` or `YEAR TO MONTH` interval, which is
+cast to the type it's used as:
+
+```rust
+let d = std::time::Duration::from_secs(5400);
+let i: vsql::Interval = conn.query_row("VALUES CAST(? AS INTERVAL HOUR TO MINUTE)", [d], |r| r.get(0))?;
+println!("{i}"); // INTERVAL '1:30' HOUR(2) TO MINUTE
+```
+
 A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
 `chrono` and `rust_decimal` types need those features:
 

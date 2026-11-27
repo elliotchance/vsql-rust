@@ -1,13 +1,16 @@
-// Conversions between chrono's types and DATE, TIME and TIMESTAMP. Fractional
-// seconds are microseconds (smaller ones are truncated), and an offset is in
-// minutes.
+// Conversions between chrono's types and DATE, TIME, TIMESTAMP and INTERVAL.
+// Fractional seconds are microseconds (smaller ones are truncated), and an
+// offset is in minutes.
 
 use chrono::{
-    DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
+    DateTime, Datelike, FixedOffset, Months, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta,
+    TimeZone, Timelike, Utc,
 };
 
 use crate::error::{Error, Result};
-use crate::types::{Date, FromSql, FromSqlError, Time, Timestamp, ToSql, Value};
+use crate::types::{
+    Date, FromSql, FromSqlError, Interval, IntervalFields, Time, Timestamp, ToSql, Value,
+};
 
 fn date(d: NaiveDate) -> Date {
     Date {
@@ -147,5 +150,85 @@ impl ToSql for DateTime<Utc> {
 impl FromSql for DateTime<Utc> {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         DateTime::<FixedOffset>::from_sql(value).map(|t| t.with_timezone(&Utc))
+    }
+}
+
+/// A DAY TO SECOND interval. Nanoseconds are truncated to microseconds.
+impl TryFrom<TimeDelta> for Interval {
+    type Error = Error;
+
+    fn try_from(d: TimeDelta) -> Result<Self> {
+        d.num_microseconds()
+            .map(Interval::day_to_second)
+            .ok_or_else(|| Error::ToSqlConversion(format!("{d} is too long").into()))
+    }
+}
+
+/// A day-time interval.
+impl TryFrom<Interval> for TimeDelta {
+    type Error = FromSqlError;
+
+    fn try_from(i: Interval) -> Result<Self, FromSqlError> {
+        Ok(TimeDelta::microseconds(i.day_time()?))
+    }
+}
+
+/// A DAY TO SECOND interval, which is cast to the interval type it's used as.
+impl ToSql for TimeDelta {
+    fn to_sql(&self) -> Result<Value> {
+        Interval::try_from(*self).map(Value::Interval)
+    }
+}
+
+/// A day-time interval.
+impl FromSql for TimeDelta {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Interval(i) => TimeDelta::try_from(*i),
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+/// A YEAR TO MONTH interval.
+impl From<Months> for Interval {
+    fn from(m: Months) -> Self {
+        Interval {
+            fields: IntervalFields::YearToMonth,
+            months: m.as_u32().into(),
+            microseconds: 0,
+        }
+    }
+}
+
+/// A year-month interval that isn't negative.
+impl TryFrom<Interval> for Months {
+    type Error = FromSqlError;
+
+    fn try_from(i: Interval) -> Result<Self, FromSqlError> {
+        if !i.fields.is_year_month() {
+            return Err(FromSqlError::InvalidType);
+        }
+
+        u32::try_from(i.months)
+            .map(Months::new)
+            .map_err(|_| FromSqlError::OutOfRange)
+    }
+}
+
+/// A YEAR TO MONTH interval, which is cast to the interval type it's used as.
+impl ToSql for Months {
+    fn to_sql(&self) -> Result<Value> {
+        Ok(Value::Interval(Interval::from(*self)))
+    }
+}
+
+/// A year-month interval that isn't negative.
+impl FromSql for Months {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Interval(i) => Months::try_from(*i),
+            _ => Err(FromSqlError::InvalidType),
+        }
     }
 }

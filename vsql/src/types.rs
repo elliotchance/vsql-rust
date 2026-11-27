@@ -3,6 +3,7 @@
 use std::error;
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 
 use vsql_sys::*;
 
@@ -319,6 +320,36 @@ impl Field {
 /// An INTERVAL. A year-month interval (see [`IntervalFields::is_year_month`])
 /// is a number of months, and a day-time interval is a number of
 /// microseconds. They're negative for a negative interval.
+///
+/// A day-time interval converts to and from a [`std::time::Duration`] (which
+/// can't be negative), and with the `chrono` feature, a `chrono::Duration`
+/// (`TimeDelta`). A year-month interval converts to and from a
+/// `chrono::Months` (which can't be negative). Smaller units than
+/// microseconds are truncated. These types are also parameters, as a
+/// `DAY TO SECOND` or `YEAR TO MONTH` interval, which is cast to the interval
+/// type it's used as (so a parameter that's cast to `INTERVAL HOUR` loses the
+/// minutes and seconds). An interval of the other kind, or one that's out of
+/// range, can't be converted.
+///
+/// ```
+/// use std::time::Duration;
+/// use vsql::{Interval, IntervalFields};
+///
+/// # fn main() -> vsql::Result<()> {
+/// let conn = vsql::Connection::open_in_memory()?;
+/// let d: Duration = conn.query_row("VALUES INTERVAL '1:30' MINUTE TO SECOND", (), |r| r.get(0))?;
+/// assert_eq!(d, Duration::from_secs(90));
+///
+/// let i: Interval = conn.query_row(
+///     "VALUES CAST(? AS INTERVAL HOUR TO MINUTE)",
+///     [Duration::from_secs(5400)],
+///     |r| r.get(0),
+/// )?;
+/// assert_eq!(i.to_string(), "INTERVAL '1:30' HOUR(2) TO MINUTE");
+/// assert_eq!(Duration::try_from(i).unwrap(), Duration::from_secs(5400));
+/// # Ok(())
+/// # }
+/// ```
 ///
 /// ```
 /// use vsql::{Interval, IntervalFields};
@@ -1073,6 +1104,64 @@ impl FromSql for Interval {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         match value {
             Value::Interval(i) => Ok(*i),
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+impl Interval {
+    /// A DAY TO SECOND interval.
+    pub(crate) fn day_to_second(microseconds: i64) -> Interval {
+        Interval {
+            fields: IntervalFields::DayToSecond,
+            months: 0,
+            microseconds,
+        }
+    }
+
+    /// The microseconds of a day-time interval.
+    pub(crate) fn day_time(&self) -> Result<i64, FromSqlError> {
+        if self.fields.is_year_month() {
+            return Err(FromSqlError::InvalidType);
+        }
+
+        Ok(self.microseconds)
+    }
+}
+
+/// A DAY TO SECOND interval. Nanoseconds are truncated to microseconds.
+impl TryFrom<Duration> for Interval {
+    type Error = Error;
+
+    fn try_from(d: Duration) -> Result<Self> {
+        i64::try_from(d.as_micros())
+            .map(Interval::day_to_second)
+            .map_err(|_| Error::ToSqlConversion(format!("{d:?} is too long").into()))
+    }
+}
+
+/// A day-time interval that isn't negative.
+impl TryFrom<Interval> for Duration {
+    type Error = FromSqlError;
+
+    fn try_from(i: Interval) -> Result<Self, FromSqlError> {
+        let microseconds = u64::try_from(i.day_time()?).map_err(|_| FromSqlError::OutOfRange)?;
+        Ok(Duration::from_micros(microseconds))
+    }
+}
+
+/// A DAY TO SECOND interval, which is cast to the interval type it's used as.
+impl ToSql for Duration {
+    fn to_sql(&self) -> Result<Value> {
+        Interval::try_from(*self).map(Value::Interval)
+    }
+}
+
+/// A day-time interval that isn't negative.
+impl FromSql for Duration {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Interval(i) => Duration::try_from(*i),
             _ => Err(FromSqlError::InvalidType),
         }
     }
