@@ -13,6 +13,7 @@ categories = ["database"]
 
 [dependencies]
 vsql-sys = { version = "=0.0.0", path = "../vsql-sys" }
+tokio = { version = "1", optional = true, default-features = false, features = ["sync"] }
 chrono = { version = "0.4.42", optional = true, default-features = false }
 time = { version = "0.3.36", optional = true, default-features = false }
 rust_decimal = { version = "1.43", optional = true, default-features = false, features = ["std"] }
@@ -20,6 +21,7 @@ r2d2 = { version = "0.8", optional = true }
 deadpool = { version = "0.12", optional = true, default-features = false, features = ["managed"] }
 
 [features]
+async = ["dep:tokio"]
 chrono = ["dep:chrono"]
 time = ["dep:time"]
 rust_decimal = ["dep:rust_decimal"]
