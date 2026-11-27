@@ -173,7 +173,6 @@ already been downloaded.
 
 ## Releasing
 
-`vsql` and `vsql-sys` have the same version (`version` in `Cargo.toml`).
-Update it, then publish a GitHub release with the tag `vVERSION` (such as
-`v1.0.1`). The release workflow checks that the tag matches the version, tests,
-and publishes both crates to crates.io.
+Publish a GitHub release with the tag `vVERSION` (such as `v1.0.1`). The
+release workflow sets the version of `vsql` and `vsql-sys` from the tag (it's
+`0.0.0` in `Cargo.toml`), tests, and publishes both crates to crates.io.

@@ -12,7 +12,7 @@ keywords = ["vsql", "sql", "database", "embedded"]
 categories = ["database"]
 
 [dependencies]
-vsql-sys = { version = "=1.0.0", path = "../vsql-sys" }
+vsql-sys = { version = "=0.0.0", path = "../vsql-sys" }
 chrono = { version = "0.4.42", optional = true, default-features = false }
 rust_decimal = { version = "1.43", optional = true, default-features = false, features = ["std"] }
 
