@@ -32,6 +32,8 @@ fn main() -> vsql::Result<()> {
 `Connection::open` creates the file if it doesn't exist, and
 `Connection::open_in_memory` is a database that only exists for the life of
 the connection. The API follows [rusqlite](https://docs.rs/rusqlite).
+`execute` and `prepare` take one statement, and `execute_batch` executes SQL
+with more than one statement (separated by `;`), such as a schema.
 
 See the [documentation](https://docs.rs/vsql) for parameters, transactions and
 the Rust type of each column type, and

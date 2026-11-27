@@ -8,6 +8,7 @@ use vsql_sys::*;
 use crate::error::{Error, Result};
 use crate::params::Params;
 use crate::raw;
+use crate::sql;
 use crate::statement::{AndThenRows, MappedRows, Row, Rows, Statement};
 
 /// A connection to a database.
@@ -100,6 +101,36 @@ impl Connection {
         }
 
         self.prepare(sql)?.execute_values(values)
+    }
+
+    /// Executes SQL that has any number of statements separated by `;` (such
+    /// as a schema or a migration), without parameters. A `;` in a string, a
+    /// quoted identifier or a comment doesn't end a statement.
+    ///
+    /// The statements are executed one at a time, in autocommit (so the
+    /// statements before one that fails have been committed) or in the
+    /// transaction it's executed in. The rows of a query are ignored.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute_batch(
+    ///     "CREATE TABLE foo (x INTEGER);
+    ///      INSERT INTO foo (x) VALUES (1); -- The first row.
+    ///      INSERT INTO foo (x) VALUES (2);",
+    /// )?;
+    /// let n: i64 = conn.query_row("SELECT COUNT(*) FROM foo", (), |row| row.get(0))?;
+    /// assert_eq!(n, 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn execute_batch(&self, sql: &str) -> Result<()> {
+        let mut stmt = Statement::new(self)?;
+        for sql in sql::split_statements(sql) {
+            stmt.execute_ignoring_rows(sql)?;
+        }
+
+        Ok(())
     }
 
     /// Prepares a statement, which can be executed many times.
