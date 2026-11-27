@@ -58,6 +58,9 @@ pub enum Error {
     /// `execute` was given a query (a statement that returns rows, such as a
     /// SELECT), which isn't executed. Use `query` or `query_row` instead.
     ExecuteReturnedResults,
+    /// The connection of an [`AsyncConnection`](crate::AsyncConnection) has
+    /// been closed.
+    ConnectionClosed,
 }
 
 impl Error {
@@ -147,6 +150,7 @@ impl fmt::Display for Error {
             Error::ExecuteReturnedResults => {
                 f.write_str("execute was given a query, which returns rows")
             }
+            Error::ConnectionClosed => f.write_str("the connection has been closed"),
         }
     }
 }

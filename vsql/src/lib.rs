@@ -86,6 +86,8 @@
 //!
 //! # Features
 //!
+//! - `async`: [`AsyncConnection`], which runs a connection on its own thread
+//!   for async code.
 //! - `chrono`: `NaiveDate`, `NaiveTime`, `NaiveDateTime`, `DateTime<FixedOffset>`
 //!   and `DateTime<Utc>` as parameters and columns.
 //! - `time`: `Date`, `Time`, `PrimitiveDateTime` and `OffsetDateTime` as
@@ -117,8 +119,11 @@
 //!
 //! Each connection has its own libvsql environment, so connections can be
 //! used from different threads at the same time. A [`Connection`] is `Send`
-//! but not `Sync`.
+//! but not `Sync`. An `AsyncConnection` (with the `async` feature) runs a
+//! connection on its own thread, and can be shared by async tasks.
 
+#[cfg(feature = "async")]
+mod async_connection;
 mod connection;
 mod error;
 mod optional;
@@ -139,6 +144,8 @@ mod with_rust_decimal;
 #[cfg(feature = "time")]
 mod with_time;
 
+#[cfg(feature = "async")]
+pub use async_connection::AsyncConnection;
 pub use connection::{
     Connection, DropBehavior, IsolationLevel, Savepoint, Transaction, TransactionOptions,
 };

@@ -188,6 +188,17 @@ Each connection has its own libvsql environment, so different connections can
 be used from different threads at the same time. A `Connection` can be moved
 to another thread (it's `Send`), but not shared (it isn't `Sync`).
 
+For async code, the `async` feature has `vsql::AsyncConnection`, which runs a
+connection on its own thread (with any async runtime). It can be cloned and
+shared by tasks, and each `call` runs a closure with the connection:
+
+```rust
+let conn = vsql::AsyncConnection::open("my.vsql").await?;
+let n: i64 = conn
+    .call(|conn| conn.query_row("SELECT COUNT(*) FROM foo", (), |r| r.get(0)))
+    .await?;
+```
+
 ## Crates
 
 - [`vsql`](vsql): the API.
