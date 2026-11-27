@@ -4,8 +4,9 @@ resolver = "2"
 
 [workspace.package]
 # vsql and vsql-sys are released together, with the same version. The release
-# workflow checks that it's the version of the release's tag.
-version = "1.0.0"
+# workflow sets it (and vsql's vsql-sys requirement) from the release's tag, so
+# it's 0.0.0 here.
+version = "0.0.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
