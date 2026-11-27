@@ -18,22 +18,29 @@ fn main() {
         return;
     }
 
-    let os = match env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() {
-        "macos" => "macos",
-        "linux" => "linux",
-        "windows" => "windows",
-        other => panic!("vsql isn't supported on {other}"),
+    // The OS and architecture names of V (and vsql.mk). The libc (such as
+    // glibc or musl on Linux, or MSVC or MinGW on Windows) doesn't matter.
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let os_arch = format!(
+        "{}_{}",
+        os,
+        match arch.as_str() {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        }
+    );
+    let Some((_, libraries)) = BUILD_FLAGS.iter().find(|(name, _)| *name == os_arch) else {
+        // The amalgamation only has the C that V generated on the OSes that
+        // vsql's release is built on (not the BSDs, for example).
+        let supported: Vec<_> = BUILD_FLAGS.iter().map(|(name, _)| *name).collect();
+        panic!(
+            "vsql-sys can't be built for {os} on {arch}: the vsql amalgamation only has the C \
+             for {}",
+            supported.join(", ")
+        );
     };
-    let arch = match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => panic!("vsql isn't supported on {other}"),
-    };
-    let os_arch = format!("{os}_{arch}");
-    let (_, libraries) = BUILD_FLAGS
-        .iter()
-        .find(|(name, _)| *name == os_arch)
-        .unwrap_or_else(|| panic!("there's no libvsql C for {os_arch}"));
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("amalgamation");
     let mut build = cc::Build::new();
@@ -47,8 +54,17 @@ fn main() {
         .flag("-fwrapv")
         .flag("-w");
 
-    let msvc = env::var("CARGO_CFG_TARGET_ENV").unwrap() == "msvc";
-    if msvc {
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap();
+    if target_env == "musl" {
+        // musl has no getcontext, and the garbage collector must find the
+        // static data of a static binary with dl_iterate_phdr (or it aborts
+        // with "Wrong DATASTART/END pair").
+        build
+            .define("NO_GETCONTEXT", None)
+            .define("HAVE_DL_ITERATE_PHDR", None)
+            .define("DL_ITERATE_PHDR_STRONG", None);
+    }
+    if target_env == "msvc" {
         // The C that V generates uses GNU C (such as statement expressions),
         // which MSVC can't compile, so it's compiled with clang-cl. For clang
         // on Windows, it doesn't include stdio.h. It declares the printf
@@ -64,6 +80,11 @@ fn main() {
     }
     build.compile("vsql");
 
+    // musl's libc.a has dl, pthread and m in it. Linking them would take the
+    // system's (glibc) static libraries instead.
+    if target_env == "musl" {
+        return;
+    }
     for library in *libraries {
         println!("cargo:rustc-link-lib={library}");
     }

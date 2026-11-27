@@ -11,17 +11,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # toolchain is the Rust toolchain (stable by default), and target is
+        # the target to build and test for, if it isn't the toolchain's.
         include:
           - { os: Linux, arch: x86-64, runner: ubuntu-latest }
           - { os: Linux, arch: ARM64, runner: ubuntu-24.04-arm }
+          # Static binaries (and Alpine), compiled with musl-gcc.
+          - { os: Linux musl, arch: x86-64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: Linux musl, arch: ARM64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
           - { os: macOS, arch: x86-64, runner: macos-15-intel }
           - { os: macOS, arch: ARM64, runner: macos-latest }
-          # Windows ARM64 isn't tested.
           - { os: Windows, arch: x86-64, runner: windows-latest }
+          - { os: Windows, arch: ARM64, runner: windows-11-arm }
+          # MinGW's gcc instead of clang-cl.
+          - { os: Windows GNU, arch: x86-64, runner: windows-latest, toolchain: stable-x86_64-pc-windows-gnu }
     runs-on: ${{ matrix.runner }}
+    env:
+      TOOLCHAIN: ${{ matrix.toolchain || 'stable' }}
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup toolchain install $TOOLCHAIN --profile minimal && rustup default $TOOLCHAIN
+        shell: bash
+      - if: matrix.target
+        run: |
+          sudo apt-get install -y musl-tools
+          rustup target add ${{ matrix.target }}
+          echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
       - run: cargo test --all-features
       - run: cargo test
       - run: cargo run --example main
@@ -40,6 +55,16 @@ jobs:
       # Both crates can be packaged (and vsql-sys is under crates.io's size
       # limit).
       - run: cargo package --workspace
+      # The OSes that the amalgamation doesn't have the C for fail with a
+      # clear message.
+      - name: FreeBSD is rejected
+        run: |
+          rustup target add x86_64-unknown-freebsd
+          if cargo check -p vsql-sys --target x86_64-unknown-freebsd 2> freebsd.txt; then
+            echo "::error::vsql-sys was built for FreeBSD"
+            exit 1
+          fi
+          grep "vsql-sys can't be built for freebsd on x86_64: the vsql amalgamation only has the C for" freebsd.txt
 
   msrv:
     name: Rust 1.75 (MSRV)
