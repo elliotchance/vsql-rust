@@ -85,6 +85,7 @@
 //!   parameters and columns, and `Duration` as a day-time `INTERVAL`.
 //! - `rust_decimal`: `Decimal` as a parameter and a `DECIMAL`, `NUMERIC` or
 //!   `DECFLOAT` column.
+//! - `r2d2`, `deadpool`: a connection pool of a database file, see [`pool`].
 //!
 //! # Errors
 //!
@@ -108,6 +109,8 @@ mod connection;
 mod error;
 mod optional;
 mod params;
+#[cfg(any(feature = "r2d2", feature = "deadpool"))]
+pub mod pool;
 mod raw;
 mod sql;
 mod statement;

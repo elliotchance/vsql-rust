@@ -129,6 +129,18 @@ if let Err(e) = conn.execute("INSERT INTO foo (id) VALUES (1)", ()) {
 }
 ```
 
+## Connection pools
+
+The `r2d2` and `deadpool` features have `vsql::pool::VsqlConnectionManager`,
+which opens connections to a database file for a pool (an in-memory database
+can't be pooled, since each connection to memory is a different database):
+
+```rust
+let pool = r2d2::Pool::new(vsql::pool::VsqlConnectionManager::file("my.vsql"))?;
+let conn = pool.get()?;
+conn.execute("INSERT INTO foo (x) VALUES (1)", ())?;
+```
+
 ## Version
 
 `vsql::version()` is the version of vsql that's compiled into the crate (such

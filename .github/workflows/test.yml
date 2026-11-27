@@ -52,4 +52,7 @@ jobs:
       - run: cargo +stable generate-lockfile
         env:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+      # scheduled-thread-pool 0.2.8 (from r2d2) needs parking_lot 0.13 (Rust
+      # 1.95), but doesn't have a rust-version.
+      - run: cargo +stable update -p scheduled-thread-pool --precise 0.2.7
       - run: cargo +1.75 test --all-features
