@@ -683,12 +683,15 @@ impl Row {
 mod sealed {
     pub trait Sealed {}
     impl Sealed for usize {}
-    impl Sealed for &str {}
+    impl Sealed for str {}
+    impl Sealed for String {}
+    impl<T: Sealed + ?Sized> Sealed for &T {}
 }
 
-/// The index of a column: its index (starting at 0), or its name. A name
-/// that's the same as a column's name is that column, otherwise it's the first
-/// column with the name ignoring ASCII case (so `"x"` is the column `X`).
+/// The index of a column: its index (starting at 0), or its name as a `&str` or
+/// `String`. A name that's the same as a column's name is that column,
+/// otherwise it's the first column with the name ignoring ASCII case (so `"x"`
+/// is the column `X`).
 pub trait RowIndex: sealed::Sealed {
     #[doc(hidden)]
     fn index(&self, columns: &[Column]) -> Result<usize>;
@@ -704,7 +707,7 @@ impl RowIndex for usize {
     }
 }
 
-impl RowIndex for &str {
+impl RowIndex for str {
     fn index(&self, columns: &[Column]) -> Result<usize> {
         columns
             .iter()
@@ -715,5 +718,17 @@ impl RowIndex for &str {
                     .position(|c| c.name.eq_ignore_ascii_case(self))
             })
             .ok_or_else(|| Error::InvalidColumnName(self.to_string()))
+    }
+}
+
+impl RowIndex for String {
+    fn index(&self, columns: &[Column]) -> Result<usize> {
+        self.as_str().index(columns)
+    }
+}
+
+impl<T: RowIndex + ?Sized> RowIndex for &T {
+    fn index(&self, columns: &[Column]) -> Result<usize> {
+        (**self).index(columns)
     }
 }
