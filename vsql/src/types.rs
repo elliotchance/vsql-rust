@@ -612,6 +612,9 @@ impl Kind {
     }
 }
 
+/// The longest CHARACTER VARYING or BINARY VARYING (in characters or octets).
+const MAX_VARYING_LENGTH: usize = 10_485_760;
+
 impl Value {
     /// The value of a column that's read as a string.
     pub(crate) fn parse(s: String, ty: Type) -> Result<Value, FromSqlError> {
@@ -707,15 +710,29 @@ impl Value {
             // 34 is the precision of a DECFLOAT, and vsql checks the string.
             Value::DecFloat(s) => text(SQL_DECFLOAT, 34, 0, s.clone()),
             Value::Text(s) => {
-                // A CHARACTER VARYING as long as the string (which can't be 0).
-                let chars = SQLINTEGER::try_from(s.chars().count().max(1))
+                // A CHARACTER VARYING as long as the string (which can't be 0),
+                // or a CHARACTER LARGE OBJECT if it's longer than a CHARACTER
+                // VARYING can be.
+                let chars = s.chars().count().max(1);
+                let ty = if chars > MAX_VARYING_LENGTH {
+                    SQL_CLOB
+                } else {
+                    SQL_VARCHAR
+                };
+                let chars = SQLINTEGER::try_from(chars)
                     .map_err(|_| invalid("the string is too long".to_string()))?;
-                text(SQL_VARCHAR, chars, 0, s.clone())
+                text(ty, chars, 0, s.clone())
             }
             Value::Binary(b) => Param {
                 value_type: SQL_VARBINARY,
-                parameter_type: SQL_VARBINARY,
-                // A BINARY VARYING as long as the value (which can't be 0).
+                // A BINARY VARYING as long as the value (which can't be 0), or
+                // a BINARY LARGE OBJECT if it's longer than a BINARY VARYING
+                // can be.
+                parameter_type: if b.len() > MAX_VARYING_LENGTH {
+                    SQL_BLOB
+                } else {
+                    SQL_VARBINARY
+                },
                 column_size: SQLINTEGER::try_from(b.len().max(1))
                     .map_err(|_| invalid("the binary string is too long".to_string()))?,
                 decimal_digits: 0,

@@ -55,8 +55,8 @@
 //! | `i8` to `i64`, `u8` to `u32`          | `BIGINT`                                   |
 //! | `u64`, `i128`, `u128`                 | `BIGINT` (`NUMERIC` if it's out of range)  |
 //! | `f32`, `f64`                          | `DOUBLE PRECISION`                         |
-//! | `&str`, `String`                      | `CHARACTER VARYING`                        |
-//! | `&[u8]`, `Vec<u8>`, `[u8; N]`         | `BINARY VARYING`                           |
+//! | `&str`, `String`                      | `CHARACTER VARYING` (`CLOB` if it's longer than 10,485,760) |
+//! | `&[u8]`, `Vec<u8>`, `[u8; N]`         | `BINARY VARYING` (`BLOB` if it's longer than 10,485,760) |
 //! | [`Date`]                              | `DATE`                                     |
 //! | [`Time`]                              | `TIME(6)` (`WITH TIME ZONE` with an offset) |
 //! | [`Timestamp`]                         | `TIMESTAMP(6)` (`WITH TIME ZONE` with an offset) |
