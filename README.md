@@ -81,7 +81,7 @@ transaction with a savepoint, which is committed when the savepoint is.
 |----------------------------------|------------------------------------------------|
 | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)            |
 | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                                   |
-| `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, `rust_decimal::Decimal` |
+| `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, `rust_decimal::Decimal`, any integer type (if it's an integer in range) |
 | `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                                       |
 | `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]` (`&[u8]` as a parameter)  |
 | `BOOLEAN`                        | `bool`                                         |
