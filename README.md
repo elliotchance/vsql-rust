@@ -84,6 +84,18 @@ ignores. `conn.unchecked_transaction()` starts a transaction through a
 `&Connection` (such as one in an `Rc`), which is an error if the connection is
 already in a transaction.
 
+## Parameters
+
+Parameters are `?`, or `:name` with `named_params!` (a name can be used more
+than once):
+
+```rust
+conn.execute(
+    "UPDATE foo SET y = :y WHERE x = :x OR x = :x + 1",
+    vsql::named_params! { ":x": 1, ":y": "b" },
+)?;
+```
+
 ## Types
 
 | SQL                              | Rust                                           |
