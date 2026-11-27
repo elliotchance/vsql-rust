@@ -561,6 +561,15 @@ pub fn fetch(stmt: SQLHSTMT) -> Result<bool> {
     Ok(true)
 }
 
+/// Closes the cursor of the statement, if it has one.
+pub fn reset(stmt: SQLHSTMT) -> Result<()> {
+    check(
+        unsafe { SQLFreeStmt(stmt, SQL_CLOSE) },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+}
+
 pub fn close_cursor(stmt: SQLHSTMT) -> Result<()> {
     check(unsafe { SQLCloseCursor(stmt) }, SQL_HANDLE_STMT, stmt)
 }

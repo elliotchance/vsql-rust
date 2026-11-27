@@ -43,6 +43,18 @@ the Rust type of each column type, and
 cargo run --example main
 ```
 
+## Prepared statements
+
+`conn.prepare` parses a statement once, so it can be executed many times.
+`conn.prepare_cached` also keeps it (in a cache of the 16 most recently used
+statements) when it's dropped, for the next `prepare_cached` of the same SQL:
+
+```rust
+for x in 1..=3 {
+    conn.prepare_cached("INSERT INTO foo (x) VALUES (?)")?.execute([x])?;
+}
+```
+
 ## Transactions
 
 Each statement is committed when it finishes (or when the rows of a query are

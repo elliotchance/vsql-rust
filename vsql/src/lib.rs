@@ -27,6 +27,12 @@
 //! kept. [`Connection::execute_batch`] executes SQL with more than one
 //! statement (separated by `;`), such as a schema.
 //!
+//! # Prepared statements
+//!
+//! [`Connection::prepare`] parses a statement once, so that it can be executed
+//! many times. [`Connection::prepare_cached`] also keeps it after it's
+//! dropped, for the next `prepare_cached` of the same SQL.
+//!
 //! # Transactions
 //!
 //! Each statement is committed when it finishes (or when the rows of a query
@@ -119,6 +125,7 @@
 //! used from different threads at the same time. A [`Connection`] is `Send`
 //! but not `Sync`.
 
+mod cache;
 mod connection;
 mod error;
 mod optional;
@@ -146,6 +153,8 @@ pub use error::{Diagnostics, Error, Result};
 pub use optional::OptionalExtension;
 pub use params::{params_from_iter, Params, ParamsFromIter};
 pub use schema::{ForeignKey, ForeignKeyAction, PrimaryKey, Table, TableColumn, TableType};
-pub use statement::{AndThenRows, Column, MappedRows, Row, RowIndex, Rows, Statement};
+pub use statement::{
+    AndThenRows, CachedStatement, Column, MappedRows, Row, RowIndex, Rows, Statement,
+};
 pub use types::{Date, FromSql, Interval, IntervalFields, Time, Timestamp, ToSql, Type, Value};
 pub use version::{build_info, version, version_number, BuildInfo};

@@ -1,5 +1,6 @@
 use std::cell::OnceCell;
 use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use vsql_sys::*;
@@ -31,6 +32,15 @@ impl<'conn> Statement<'conn> {
             stmt: raw::alloc_stmt(conn.dbc())?,
             columns: OnceCell::new(),
         })
+    }
+
+    /// A statement that was already prepared.
+    pub(crate) fn from_handle(conn: &'conn Connection, stmt: SQLHSTMT) -> Statement<'conn> {
+        Statement {
+            conn,
+            stmt,
+            columns: OnceCell::new(),
+        }
     }
 
     pub(crate) fn prepare_sql(&mut self, sql: &str) -> Result<()> {
@@ -323,6 +333,57 @@ impl Statement<'_> {
 impl Drop for Statement<'_> {
     fn drop(&mut self) {
         let _ = raw::free_handle(SQL_HANDLE_STMT, self.stmt);
+    }
+}
+
+/// A statement from the connection's cache, see
+/// [`Connection::prepare_cached`]. It dereferences to the [`Statement`], and
+/// goes back into the cache when it's dropped.
+#[derive(Debug)]
+pub struct CachedStatement<'conn> {
+    sql: String,
+    // None after it's discarded.
+    stmt: Option<Statement<'conn>>,
+}
+
+impl<'conn> CachedStatement<'conn> {
+    pub(crate) fn new(sql: String, stmt: Statement<'conn>) -> CachedStatement<'conn> {
+        CachedStatement {
+            sql,
+            stmt: Some(stmt),
+        }
+    }
+
+    /// Frees the statement instead of putting it back into the cache.
+    pub fn discard(mut self) {
+        self.stmt = None;
+    }
+}
+
+impl<'conn> Deref for CachedStatement<'conn> {
+    type Target = Statement<'conn>;
+
+    fn deref(&self) -> &Statement<'conn> {
+        self.stmt.as_ref().expect("the statement was discarded")
+    }
+}
+
+impl<'conn> DerefMut for CachedStatement<'conn> {
+    fn deref_mut(&mut self) -> &mut Statement<'conn> {
+        self.stmt.as_mut().expect("the statement was discarded")
+    }
+}
+
+impl Drop for CachedStatement<'_> {
+    fn drop(&mut self) {
+        if let Some(stmt) = self.stmt.take() {
+            let (conn, handle) = (stmt.conn, stmt.stmt);
+            // The handle belongs to the cache now.
+            std::mem::forget(stmt);
+            // Rows that were leaked (with mem::forget) didn't close the cursor.
+            let _ = raw::reset(handle);
+            conn.cache_statement(std::mem::take(&mut self.sql), handle);
+        }
     }
 }
 

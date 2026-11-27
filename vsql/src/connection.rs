@@ -5,11 +5,12 @@ use std::path::Path;
 
 use vsql_sys::*;
 
+use crate::cache::StatementCache;
 use crate::error::{Error, Result};
 use crate::params::Params;
 use crate::raw;
 use crate::sql;
-use crate::statement::{AndThenRows, MappedRows, Row, Rows, Statement};
+use crate::statement::{AndThenRows, CachedStatement, MappedRows, Row, Rows, Statement};
 
 /// A connection to a database.
 ///
@@ -26,6 +27,7 @@ pub struct Connection {
     in_transaction: Cell<bool>,
     // The names (as they are in SQL) of the savepoints that are active.
     savepoints: RefCell<Vec<String>>,
+    cache: RefCell<StatementCache>,
     // Not Sync, since a libvsql environment runs one routine at a time and has
     // one transaction.
     _not_sync: PhantomData<Cell<()>>,
@@ -69,6 +71,7 @@ impl Connection {
             dbc,
             in_transaction: Cell::new(false),
             savepoints: RefCell::new(Vec::new()),
+            cache: RefCell::new(StatementCache::new()),
             _not_sync: PhantomData,
         };
         raw::set_autocommit(dbc, true)?;
@@ -133,6 +136,52 @@ impl Connection {
         stmt.prepare_sql(sql)?;
 
         Ok(stmt)
+    }
+
+    /// Prepares a statement, or uses the statement of the same SQL from the
+    /// connection's cache, so that it isn't parsed again. The statement goes
+    /// back into the cache when it's dropped.
+    ///
+    /// The cache keeps the 16 most recently used statements, see
+    /// [`set_prepared_statement_cache_capacity`](Connection::set_prepared_statement_cache_capacity).
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+    /// for x in 1..=3 {
+    ///     let mut stmt = conn.prepare_cached("INSERT INTO foo (x) VALUES (?)")?;
+    ///     stmt.execute([x])?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn prepare_cached(&self, sql: &str) -> Result<CachedStatement<'_>> {
+        let cached = self.cache.borrow_mut().take(sql);
+        let stmt = match cached {
+            Some(stmt) => Statement::from_handle(self, stmt),
+            None => self.prepare(sql)?,
+        };
+
+        Ok(CachedStatement::new(sql.to_string(), stmt))
+    }
+
+    /// Sets how many statements the cache of
+    /// [`prepare_cached`](Connection::prepare_cached) keeps (16 by default).
+    /// The least recently used statements are removed when there are more.
+    /// A capacity of 0 turns the cache off.
+    pub fn set_prepared_statement_cache_capacity(&self, capacity: usize) {
+        self.cache.borrow_mut().set_capacity(capacity);
+    }
+
+    /// Removes every statement from the cache of
+    /// [`prepare_cached`](Connection::prepare_cached).
+    pub fn flush_prepared_statement_cache(&self) {
+        self.cache.borrow_mut().flush();
+    }
+
+    pub(crate) fn cache_statement(&self, sql: String, stmt: SQLHSTMT) {
+        self.cache.borrow_mut().put(sql, stmt);
     }
 
     /// Executes a query and returns `f` of its first row, or
@@ -359,6 +408,7 @@ impl Connection {
             return Ok(());
         }
 
+        self.cache.get_mut().flush();
         let mut result = Ok(());
         if self.in_transaction.replace(false) {
             self.savepoints.borrow_mut().clear();
