@@ -90,9 +90,9 @@ already in a transaction.
 |----------------------------------|------------------------------------------------|
 | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)            |
 | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                                   |
-| `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, `rust_decimal::Decimal`, any integer type (if it's an integer in range) |
-| `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                                       |
-| `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]` (`&[u8]` as a parameter)  |
+| `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`, `rust_decimal::Decimal`, `bigdecimal::BigDecimal`, any integer type (if it's an integer in range) |
+| `CHARACTER`, `VARCHAR`, `CLOB`   | `String`, `serde_json::Value` (JSON text), `uuid::Uuid` (its string, as a column) |
+| `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]` (`&[u8]` as a parameter), `uuid::Uuid` (16 bytes) |
 | `BOOLEAN`                        | `bool`                                         |
 | `DATE`                           | `vsql::Date`, `chrono::NaiveDate`, `time::Date` |
 | `TIME`                           | `vsql::Time`, `chrono::NaiveTime`, `time::Time` |
@@ -127,6 +127,10 @@ A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
 ```toml
 vsql = { version = "1", features = ["chrono", "time", "rust_decimal"] }
 ```
+
+The `uuid`, `serde_json` and `bigdecimal` features are the same. vsql's
+`UUID_TO_BINARY` and `BINARY_TO_UUID` functions convert a `uuid::Uuid`
+between its 16 bytes and its string.
 
 ## Schema
 

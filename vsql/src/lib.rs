@@ -93,6 +93,12 @@
 //! - `rust_decimal`: `Decimal` as a parameter and a `DECIMAL`, `NUMERIC` or
 //!   `DECFLOAT` column.
 //! - `r2d2`, `deadpool`: a connection pool of a database file, see [`pool`].
+//! - `uuid`: `Uuid` as a parameter (a `BINARY VARYING` of 16 bytes) and a
+//!   binary or character string column (such as from `UUID_TO_BINARY`).
+//! - `serde_json`: `serde_json::Value` as a parameter (a `CHARACTER VARYING`)
+//!   and a character string column of JSON text.
+//! - `bigdecimal`: `BigDecimal` as a parameter and a `DECIMAL`, `NUMERIC` or
+//!   `DECFLOAT` column, for more digits than `rust_decimal` has (28).
 //!
 //! # Schema
 //!
@@ -132,12 +138,18 @@ mod statement;
 pub mod types;
 mod version;
 
+#[cfg(feature = "bigdecimal")]
+mod with_bigdecimal;
 #[cfg(feature = "chrono")]
 mod with_chrono;
 #[cfg(feature = "rust_decimal")]
 mod with_rust_decimal;
+#[cfg(feature = "serde_json")]
+mod with_serde_json;
 #[cfg(feature = "time")]
 mod with_time;
+#[cfg(feature = "uuid")]
+mod with_uuid;
 
 pub use connection::{
     Connection, DropBehavior, IsolationLevel, Savepoint, Transaction, TransactionOptions,

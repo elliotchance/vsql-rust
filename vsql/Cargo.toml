@@ -18,6 +18,9 @@ time = { version = "0.3.36", optional = true, default-features = false }
 rust_decimal = { version = "1.43", optional = true, default-features = false, features = ["std"] }
 r2d2 = { version = "0.8", optional = true }
 deadpool = { version = "0.12", optional = true, default-features = false, features = ["managed"] }
+uuid = { version = "1.8", optional = true, default-features = false, features = ["std"] }
+serde_json = { version = "1.0.108", optional = true, default-features = false, features = ["std"] }
+bigdecimal = { version = "0.4.5", optional = true, default-features = false, features = ["std"] }
 
 [features]
 chrono = ["dep:chrono"]
@@ -25,6 +28,9 @@ time = ["dep:time"]
 rust_decimal = ["dep:rust_decimal"]
 r2d2 = ["dep:r2d2"]
 deadpool = ["dep:deadpool"]
+uuid = ["dep:uuid"]
+serde_json = ["dep:serde_json"]
+bigdecimal = ["dep:bigdecimal"]
 
 [package.metadata.docs.rs]
 all-features = true
