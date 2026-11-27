@@ -508,6 +508,73 @@ pub fn close_cursor(stmt: SQLHSTMT) -> Result<()> {
     check(unsafe { SQLCloseCursor(stmt) }, SQL_HANDLE_STMT, stmt)
 }
 
+/// A descriptor of a statement, such as its ARD (SQL_ATTR_APP_ROW_DESC).
+fn stmt_desc(stmt: SQLHSTMT, attribute: SQLINTEGER) -> Result<SQLHDESC> {
+    let mut desc: SQLHDESC = 0;
+    check(
+        unsafe {
+            SQLGetStmtAttr(
+                stmt,
+                attribute,
+                &mut desc as *mut SQLHDESC as SQLPOINTER,
+                0,
+                ptr::null_mut(),
+            )
+        },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+    .map(|()| desc)
+}
+
+/// Sets the number of rows that SQLFetch fetches into the bound columns (the
+/// SQL_DESC_ARRAY_SIZE of the ARD), and where it sets the number of rows that
+/// it fetched (the SQL_DESC_ROWS_PROCESSED_POINTER of the IRD), which must be
+/// valid until it's set to a null pointer.
+pub fn set_rowset_size(stmt: SQLHSTMT, rows: usize, fetched: *mut SQLINTEGER) -> Result<()> {
+    let ard = stmt_desc(stmt, SQL_ATTR_APP_ROW_DESC)?;
+    let ird = stmt_desc(stmt, SQL_ATTR_IMP_ROW_DESC)?;
+    let mut size: SQLINTEGER = length(rows, "rowset")?;
+    let size = &mut size as *mut SQLINTEGER as SQLPOINTER;
+    let rc = unsafe { SQLSetDescField(ard, 0, SQL_DESC_ARRAY_SIZE, size, 0) };
+    check(rc, SQL_HANDLE_DESC, ard)?;
+    // A pointer field is set to Value itself.
+    let fetched = fetched as SQLPOINTER;
+    check(
+        unsafe { SQLSetDescField(ird, 0, SQL_DESC_ROWS_PROCESSED_POINTER, fetched, 0) },
+        SQL_HANDLE_DESC,
+        ird,
+    )
+}
+
+/// Binds a column (starting at 1) to an array of values of `width` octets
+/// each (of target_type), and an array of their lengths (or SQL_NULL_DATA),
+/// which must be valid until the columns are unbound (see [`unbind_cols`]).
+pub fn bind_col(
+    stmt: SQLHSTMT,
+    n: usize,
+    target_type: SQLSMALLINT,
+    values: SQLPOINTER,
+    width: usize,
+    lengths: *mut SQLINTEGER,
+) -> Result<()> {
+    let n: SQLSMALLINT = length(n, "column list")?;
+    let width: SQLINTEGER = length(width, "column")?;
+    check(
+        unsafe { SQLBindCol(stmt, n, target_type, values, width, lengths) },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+}
+
+/// Unbinds every column, so that SQLFetch fetches one row at a time again.
+pub fn unbind_cols(stmt: SQLHSTMT) -> Result<()> {
+    let rc = unsafe { SQLFreeStmt(stmt, SQL_UNBIND) };
+    check(rc, SQL_HANDLE_STMT, stmt)?;
+
+    set_rowset_size(stmt, 1, ptr::null_mut())
+}
+
 /// Reads a number column (starting at 1) of the fetched row as `T` (which is
 /// target_type), it's None for a NULL.
 fn get_number<T: Default>(

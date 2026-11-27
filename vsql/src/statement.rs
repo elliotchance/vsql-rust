@@ -11,6 +11,10 @@ use crate::raw;
 use crate::sql;
 use crate::types::{FromSql, Kind, Type, Value};
 
+mod rowset;
+
+use rowset::Rowset;
+
 /// A prepared statement, see [`Connection::prepare`]. It can be executed
 /// many times, with different parameters.
 pub struct Statement<'conn> {
@@ -361,11 +365,17 @@ impl Column {
 
 /// The rows of a query, see [`Statement::query`]. The cursor is closed when
 /// they're dropped (or after the last row).
+///
+/// The rows are fetched from vsql up to 100 at a time, unless the query has a
+/// column that can be very large (a CHARACTER LARGE OBJECT or BINARY LARGE
+/// OBJECT without a small length), which is fetched a row at a time.
 pub struct Rows<'stmt> {
     stmt: SQLHSTMT,
     columns: Arc<[Column]>,
     kinds: Vec<Kind>,
     buf: Vec<u8>,
+    // The bound columns, unless the rows are fetched one at a time.
+    rowset: Option<Rowset>,
     open: bool,
     // The statement, when the rows own it (see Connection::query). It's
     // dropped (and freed) after the cursor is closed.
@@ -380,6 +390,7 @@ impl<'stmt> Rows<'stmt> {
             columns: Arc::new([]),
             kinds: Vec::new(),
             buf: Vec::new(),
+            rowset: None,
             open: true,
             owner: None,
             _stmt: PhantomData,
@@ -399,6 +410,12 @@ impl<'stmt> Rows<'stmt> {
         }
         rows.kinds = columns.iter().map(|c| Kind::of(c.ty)).collect();
         rows.columns = columns.into();
+
+        // The rows are fetched a rowset at a time, unless a column can't be
+        // bound. The columns are unbound when the rows are closed.
+        if let Some(rowset) = Rowset::new(&rows.columns, &rows.kinds) {
+            rows.rowset.insert(rowset).bind(stmt)?;
+        }
 
         Ok(rows)
     }
@@ -449,13 +466,26 @@ impl<'stmt> Rows<'stmt> {
             return Ok(());
         }
         self.open = false;
+        let result = raw::close_cursor(self.stmt);
+        if self.rowset.take().is_some() {
+            raw::unbind_cols(self.stmt)?;
+        }
 
-        raw::close_cursor(self.stmt)
+        result
     }
 
     fn fetch(&mut self) -> Result<Option<Row>> {
         if !self.open {
             return Ok(None);
+        }
+        if let Some(rowset) = &mut self.rowset {
+            return match rowset.next(self.stmt, &self.columns)? {
+                Some(values) => Ok(Some(Row {
+                    values,
+                    columns: Arc::clone(&self.columns),
+                })),
+                None => self.close().map(|()| None),
+            };
         }
         if !raw::fetch(self.stmt)? {
             self.close()?;
