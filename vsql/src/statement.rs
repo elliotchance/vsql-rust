@@ -278,6 +278,25 @@ impl<'conn> Statement<'conn> {
     pub fn connection(&self) -> &'conn Connection {
         self.conn
     }
+
+    /// The columns of the statement's result, which are known once it's
+    /// prepared.
+    pub(crate) fn describe(&self) -> Result<Vec<Column>> {
+        (1..=raw::num_result_cols(self.stmt)?)
+            .map(|i| Column::describe(self.stmt, i))
+            .collect()
+    }
+
+    /// The result set of a catalog routine (such as SQLTables), which `f`
+    /// executes with the statement's handle.
+    pub(crate) fn query_catalog<F>(&mut self, f: F) -> Result<Rows<'_>>
+    where
+        F: FnOnce(SQLHSTMT) -> Result<()>,
+    {
+        f(self.stmt)?;
+
+        Rows::new(self.stmt)
+    }
 }
 
 impl std::fmt::Debug for Statement<'_> {
@@ -304,7 +323,7 @@ pub struct Column {
 
 impl Column {
     /// Describes a column (starting at 1) of a statement.
-    fn describe(stmt: SQLHSTMT, n: usize) -> Result<Column> {
+    pub(crate) fn describe(stmt: SQLHSTMT, n: usize) -> Result<Column> {
         let d = raw::describe_col(stmt, n)?;
         Ok(Column {
             name: d.name,

@@ -108,6 +108,22 @@ A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
 vsql = { version = "1", features = ["chrono", "time", "rust_decimal"] }
 ```
 
+## Schema
+
+The tables, columns and keys of a schema (`None` is the current schema), with
+names as they're stored (upper case unless they were quoted):
+
+```rust
+for table in conn.tables(None)? {
+    for column in conn.columns(None, &table.name)? {
+        println!("{}.{} {:?}", table.name, column.name, column.ty);
+    }
+}
+assert!(conn.table_exists(None, "FOO")?);
+let pk = conn.primary_key(None, "FOO")?; // Option<PrimaryKey>
+let fks = conn.foreign_keys(None, "FOO")?; // Vec<ForeignKey>
+```
+
 ## Errors
 
 An error from vsql is `vsql::Error::Sql`, with its SQLSTATE:
