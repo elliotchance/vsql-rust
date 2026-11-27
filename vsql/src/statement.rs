@@ -286,6 +286,20 @@ impl std::fmt::Debug for Statement<'_> {
     }
 }
 
+impl Statement<'_> {
+    /// Prepares and executes a statement without parameters, for
+    /// [`Connection::execute_batch`]. The rows of a query are thrown away.
+    pub(crate) fn execute_ignoring_rows(&mut self, sql: &str) -> Result<()> {
+        self.prepare_sql(sql)?;
+        self.run(Vec::new())?;
+        if raw::num_result_cols(self.stmt)? > 0 {
+            raw::close_cursor(self.stmt)?;
+        }
+
+        Ok(())
+    }
+}
+
 impl Drop for Statement<'_> {
     fn drop(&mut self) {
         let _ = raw::free_handle(SQL_HANDLE_STMT, self.stmt);

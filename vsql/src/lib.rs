@@ -24,7 +24,8 @@
 //!
 //! Each statement is one SQL statement. Its `--` comments are removed before
 //! it's given to vsql (which doesn't allow them), and `/* */` comments are
-//! kept.
+//! kept. [`Connection::execute_batch`] executes SQL with more than one
+//! statement (separated by `;`), such as a schema.
 //!
 //! # Transactions
 //!
