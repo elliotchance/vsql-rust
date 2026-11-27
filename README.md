@@ -148,9 +148,16 @@ to another thread (it's `Send`), but not shared (it isn't `Sync`).
 
 ## Requirements
 
-macOS (ARM64 and x86-64), Linux (ARM64 and x86-64) and Windows (x86-64) are
-supported, with Rust 1.75 or later and a C compiler. The first build compiles
-libvsql, which takes about 30 seconds, after that it's cached by Cargo.
+macOS, Linux (glibc or musl) and Windows (MSVC, and GNU on x86-64) are
+supported, on ARM64 and x86-64, with Rust 1.75 or later and a C compiler. The first build compiles
+libvsql, which takes about 30 seconds, after that it's cached by Cargo. Other
+OSes (such as FreeBSD) can't be built, since the vsql amalgamation only has the
+C that V generates for these.
+
+For the musl targets (such as `x86_64-unknown-linux-musl`), the C compiler is
+`musl-gcc` (`musl-tools` on Debian and Ubuntu, or `gcc` and `musl-dev` on
+Alpine). For the GNU target on Windows (`x86_64-pc-windows-gnu`), it's MinGW's
+`gcc`.
 
 On Windows (the MSVC target), libvsql is compiled with clang-cl, since the C
 that V generates doesn't compile with MSVC. Install
