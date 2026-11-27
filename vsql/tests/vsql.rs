@@ -474,10 +474,10 @@ fn parameter_errors() {
     let sql = "VALUES CAST(? AS INTEGER)";
 
     // Too few parameters.
-    assert_eq!(
-        sqlstate(conn.query_row(sql, (), |r| r.get::<_, i64>(0))),
-        "07001"
-    );
+    assert!(matches!(
+        conn.query_row(sql, (), |r| r.get::<_, i64>(0)),
+        Err(Error::InvalidParameterCount(0, 1))
+    ));
 
     // A NUMERIC that isn't a decimal.
     match conn.query_row(sql, [Value::Numeric("1e5".into())], |r| r.get::<_, i64>(0)) {
@@ -619,7 +619,10 @@ fn prepared_statements() {
         .unwrap();
     let row = two.query_row(("a", "b"), |r| Ok(r.clone())).unwrap();
     assert_eq!(row.get::<_, String>(1).unwrap(), "b");
-    assert_eq!(sqlstate(two.query_row(["a"], |r| Ok(r.clone()))), "07001");
+    assert!(matches!(
+        two.query_row(["a"], |r| Ok(r.clone())),
+        Err(Error::InvalidParameterCount(1, 2))
+    ));
 }
 
 #[test]
