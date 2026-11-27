@@ -55,6 +55,7 @@
 //! | [`Time`]                              | `TIME(6)` (`WITH TIME ZONE` with an offset) |
 //! | [`Timestamp`]                         | `TIMESTAMP(6)` (`WITH TIME ZONE` with an offset) |
 //! | [`Interval`]                          | the `INTERVAL` literal                     |
+//! | [`std::time::Duration`]               | `INTERVAL DAY TO SECOND`                   |
 //!
 //! A `DECFLOAT` is a [`Value::DecFloat`].
 //!
@@ -71,7 +72,7 @@
 //! | `DATE`                           | [`Date`]                             |
 //! | `TIME (WITH TIME ZONE)`          | [`Time`]                             |
 //! | `TIMESTAMP (WITH TIME ZONE)`     | [`Timestamp`]                        |
-//! | `INTERVAL ...`                   | [`Interval`]                         |
+//! | `INTERVAL ...`                   | [`Interval`], [`std::time::Duration`] (day-time, not negative) |
 //!
 //! A `NULL` is only an `Option`. Any column can be read as a [`Value`]. An
 //! integer that's out of the range of a `BIGINT` (such as a large `u64`) is
