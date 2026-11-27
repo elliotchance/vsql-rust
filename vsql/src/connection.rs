@@ -240,7 +240,7 @@ impl Connection {
     }
 
     /// Starts a transaction, which is rolled back when it's dropped unless
-    /// it's committed. Statements are executed in the transaction through it
+    /// it's committed (see [`Transaction::set_drop_behavior`]). Statements are executed in the transaction through it
     /// (it dereferences to the [`Connection`]).
     ///
     /// A READ UNCOMMITTED transaction is always read only (READ WRITE can't be
@@ -260,10 +260,31 @@ impl Connection {
     pub fn transaction_with(&mut self, options: TransactionOptions) -> Result<Transaction<'_>> {
         self.start_transaction(options)?;
 
-        Ok(Transaction {
-            conn: self,
-            finished: false,
-        })
+        Ok(Transaction::new(self))
+    }
+
+    /// Starts a READ COMMITTED (READ WRITE) transaction, like
+    /// [`transaction`](Connection::transaction), through a shared reference to
+    /// the connection (such as one in an `Rc`). The connection can't be in a
+    /// transaction already, which `transaction` makes sure of by borrowing it
+    /// mutably, so it's an error if it is.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = std::rc::Rc::new(vsql::Connection::open_in_memory()?);
+    /// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+    ///
+    /// let tx = conn.unchecked_transaction()?;
+    /// tx.execute("INSERT INTO foo (x) VALUES (1)", ())?;
+    /// assert!(conn.unchecked_transaction().is_err());
+    /// tx.commit()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn unchecked_transaction(&self) -> Result<Transaction<'_>> {
+        self.start_transaction(TransactionOptions::default())?;
+
+        Ok(Transaction::new(self))
     }
 
     /// Starts a transaction with a savepoint, see [`Savepoint`]. Committing
@@ -287,7 +308,14 @@ impl Connection {
     /// # }
     /// ```
     pub fn savepoint(&mut self) -> Result<Savepoint<'_>> {
-        self.start_transaction(TransactionOptions::default())?;
+        self.savepoint_with(TransactionOptions::default())
+    }
+
+    /// The same as [`savepoint`](Connection::savepoint), with the options of
+    /// the transaction that it starts (see
+    /// [`transaction_with`](Connection::transaction_with)).
+    pub fn savepoint_with(&mut self, options: TransactionOptions) -> Result<Savepoint<'_>> {
+        self.start_transaction(options)?;
         Savepoint::start(self, 1, None, true)
     }
 
@@ -410,11 +438,57 @@ impl TransactionOptions {
     }
 }
 
+/// What a [`Transaction`] or [`Savepoint`] that hasn't been committed or
+/// rolled back does when it's dropped (or finished, see
+/// [`Transaction::finish`]).
+///
+/// ```
+/// # fn main() -> vsql::Result<()> {
+/// let mut conn = vsql::Connection::open_in_memory()?;
+/// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+///
+/// let mut tx = conn.transaction()?;
+/// tx.set_drop_behavior(vsql::DropBehavior::Commit);
+/// tx.execute("INSERT INTO foo (x) VALUES (1)", ())?;
+/// tx.finish()?; // Committed.
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DropBehavior {
+    /// Rolls back the transaction, or rolls back to the savepoint and releases
+    /// it.
+    #[default]
+    Rollback,
+    /// Commits the transaction, or releases the savepoint.
+    Commit,
+    /// Leaves the transaction or savepoint active. vsql's `COMMIT` and
+    /// `ROLLBACK` can't be executed as statements, so a transaction then stays
+    /// active until the connection is closed (which rolls it back).
+    Ignore,
+    /// Rolls back like `Rollback`, then panics (unless the thread is already
+    /// panicking), for a transaction that must always be committed or rolled
+    /// back explicitly.
+    Panic,
+}
+
 /// A transaction, see [`Connection::transaction`]. It's rolled back when it's
-/// dropped, unless it's committed.
+/// dropped, unless it's committed (see [`set_drop_behavior`](Transaction::set_drop_behavior)).
 pub struct Transaction<'conn> {
-    conn: &'conn mut Connection,
+    conn: &'conn Connection,
+    drop_behavior: DropBehavior,
     finished: bool,
+}
+
+impl<'conn> Transaction<'conn> {
+    fn new(conn: &'conn Connection) -> Transaction<'conn> {
+        Transaction {
+            conn,
+            drop_behavior: DropBehavior::Rollback,
+            finished: false,
+        }
+    }
 }
 
 impl Transaction<'_> {
@@ -426,6 +500,39 @@ impl Transaction<'_> {
     /// Rolls back the transaction.
     pub fn rollback(mut self) -> Result<()> {
         self.end(false)
+    }
+
+    /// What the transaction does when it's dropped (or finished), which is
+    /// [`DropBehavior::Rollback`] unless it's changed.
+    pub fn drop_behavior(&self) -> DropBehavior {
+        self.drop_behavior
+    }
+
+    /// Sets what the transaction does when it's dropped (or finished).
+    pub fn set_drop_behavior(&mut self, drop_behavior: DropBehavior) {
+        self.drop_behavior = drop_behavior;
+    }
+
+    /// Ends the transaction according to its [`DropBehavior`], and returns the
+    /// error, which dropping it ignores.
+    pub fn finish(mut self) -> Result<()> {
+        self.finish_()
+    }
+
+    fn finish_(&mut self) -> Result<()> {
+        match self.drop_behavior {
+            DropBehavior::Rollback => self.end(false),
+            DropBehavior::Commit => self.end(true),
+            DropBehavior::Ignore => {
+                self.finished = true;
+                Ok(())
+            }
+            DropBehavior::Panic => {
+                let result = self.end(false);
+                panic_unless_panicking("transaction");
+                result
+            }
+        }
     }
 
     /// Makes a savepoint in the transaction, see [`Savepoint`].
@@ -459,8 +566,16 @@ impl Deref for Transaction<'_> {
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            let _ = self.end(false);
+            let _ = self.finish_();
         }
+    }
+}
+
+/// For [`DropBehavior::Panic`]. Panicking while the thread is panicking
+/// would abort.
+fn panic_unless_panicking(what: &str) {
+    if !std::thread::panicking() {
+        panic!("a {what} was dropped without being committed or rolled back");
     }
 }
 
@@ -471,7 +586,8 @@ impl Drop for Transaction<'_> {
 ///
 /// Committing a savepoint releases it, so that its changes are part of the
 /// transaction (or savepoint) that it's in. Dropping a savepoint that hasn't
-/// been committed rolls back to it and releases it. The savepoint of
+/// been committed rolls back to it and releases it (see
+/// [`set_drop_behavior`](Savepoint::set_drop_behavior)). The savepoint of
 /// [`Connection::savepoint`] started its transaction, so committing it
 /// commits the transaction, and dropping it rolls the transaction back.
 ///
@@ -500,6 +616,7 @@ pub struct Savepoint<'conn> {
     depth: u32,
     // Whether the savepoint started the transaction, so it ends it.
     ends_transaction: bool,
+    drop_behavior: DropBehavior,
     finished: bool,
 }
 
@@ -548,6 +665,7 @@ impl Savepoint<'_> {
             name,
             depth,
             ends_transaction,
+            drop_behavior: DropBehavior::Rollback,
             finished: false,
         })
     }
@@ -567,6 +685,10 @@ impl Savepoint<'_> {
 
     /// Releases the savepoint, or commits the transaction that it started.
     pub fn commit(mut self) -> Result<()> {
+        self.release()
+    }
+
+    fn release(&mut self) -> Result<()> {
         self.finished = true;
         if self.ends_transaction {
             self.conn.end_transaction(true)
@@ -581,6 +703,52 @@ impl Savepoint<'_> {
         let mut savepoints = self.conn.savepoints.borrow_mut();
         if let Some(i) = savepoints.iter().rposition(|n| *n == self.name) {
             savepoints.remove(i);
+        }
+    }
+
+    /// Rolls back to the savepoint and releases it, or rolls back the
+    /// transaction that it started.
+    fn rollback_and_release(&mut self) -> Result<()> {
+        self.finished = true;
+        if self.ends_transaction {
+            self.conn.end_transaction(false)
+        } else {
+            self.forget();
+            let rolled_back = self.rollback();
+            rolled_back.and(raw::end_savepoint(self.conn.dbc, &self.name, true))
+        }
+    }
+
+    /// What the savepoint does when it's dropped (or finished), which is
+    /// [`DropBehavior::Rollback`] unless it's changed.
+    pub fn drop_behavior(&self) -> DropBehavior {
+        self.drop_behavior
+    }
+
+    /// Sets what the savepoint does when it's dropped (or finished).
+    pub fn set_drop_behavior(&mut self, drop_behavior: DropBehavior) {
+        self.drop_behavior = drop_behavior;
+    }
+
+    /// Ends the savepoint according to its [`DropBehavior`], and returns the
+    /// error, which dropping it ignores.
+    pub fn finish(mut self) -> Result<()> {
+        self.finish_()
+    }
+
+    fn finish_(&mut self) -> Result<()> {
+        match self.drop_behavior {
+            DropBehavior::Rollback => self.rollback_and_release(),
+            DropBehavior::Commit => self.release(),
+            DropBehavior::Ignore => {
+                self.finished = true;
+                Ok(())
+            }
+            DropBehavior::Panic => {
+                let result = self.rollback_and_release();
+                panic_unless_panicking("savepoint");
+                result
+            }
         }
     }
 
@@ -601,15 +769,8 @@ impl Deref for Savepoint<'_> {
 
 impl Drop for Savepoint<'_> {
     fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        if self.ends_transaction {
-            let _ = self.conn.end_transaction(false);
-        } else {
-            self.forget();
-            let _ = self.rollback();
-            let _ = raw::end_savepoint(self.conn.dbc, &self.name, true);
+        if !self.finished {
+            let _ = self.finish_();
         }
     }
 }

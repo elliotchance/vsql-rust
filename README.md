@@ -77,6 +77,13 @@ tx.commit()?; // 3 and 5.
 Savepoints can be nested (`sp.savepoint()`), and `conn.savepoint()` starts a
 transaction with a savepoint, which is committed when the savepoint is.
 
+`tx.set_drop_behavior(vsql::DropBehavior::Commit)` commits a transaction (or
+savepoint) when it's dropped instead (or `Ignore` or `Panic`), and
+`tx.finish()` ends it that way and returns the error that dropping it
+ignores. `conn.unchecked_transaction()` starts a transaction through a
+`&Connection` (such as one in an `Rc`), which is an error if the connection is
+already in a transaction.
+
 ## Types
 
 | SQL                              | Rust                                           |
