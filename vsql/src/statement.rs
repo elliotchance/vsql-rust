@@ -49,6 +49,10 @@ impl<'conn> Statement<'conn> {
     }
 
     fn run(&mut self, values: Vec<Value>) -> Result<()> {
+        let expected = self.parameter_count();
+        if values.len() != expected {
+            return Err(Error::InvalidParameterCount(values.len(), expected));
+        }
         let mut params = values
             .iter()
             .enumerate()

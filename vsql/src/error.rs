@@ -26,6 +26,10 @@ pub enum Error {
     /// A parameter (starting at 1) can't be sent as its SQL value.
     InvalidParameter { index: usize, message: String },
 
+    /// The number of parameters given (the first) isn't the number of
+    /// parameters (`?`) of the statement (the second).
+    InvalidParameterCount(usize, usize),
+
     /// A Rust value couldn't be converted to an SQL value (see
     /// [`ToSql`](crate::ToSql)).
     ToSqlConversion(Box<dyn error::Error + Send + Sync>),
@@ -120,6 +124,10 @@ impl fmt::Display for Error {
             } => write!(f, "{message} (SQLSTATE {sqlstate})"),
             Error::InvalidPath(path) => write!(f, "the path isn't valid UTF-8: {}", path.display()),
             Error::InvalidParameter { index, message } => write!(f, "parameter {index}: {message}"),
+            Error::InvalidParameterCount(given, expected) => write!(
+                f,
+                "wrong number of parameters: {given} given, {expected} expected"
+            ),
             Error::ToSqlConversion(e) => e.fmt(f),
             Error::InvalidColumnIndex(index) => write!(f, "there's no column {index}"),
             Error::InvalidColumnName(name) => write!(f, "there's no column named {name}"),
