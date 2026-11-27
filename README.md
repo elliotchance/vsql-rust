@@ -149,7 +149,7 @@ let fks = conn.foreign_keys(None, "FOO")?; // Vec<ForeignKey>
 An error from vsql is `vsql::Error::Sql`, with its SQLSTATE:
 
 ```rust
-match conn.execute("SELECT * FROM nope", ()) {
+match conn.execute("DELETE FROM nope", ()) {
     Err(e) if e.sqlstate() == Some("42P01") => println!("no such table"),
     other => other?,
 };

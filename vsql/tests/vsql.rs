@@ -549,7 +549,7 @@ fn errors() {
         ("COMMIT", "42000"),
         ("VALUES 1 / 0", "22012"),
     ] {
-        let err = conn.execute(sql, ()).unwrap_err();
+        let err = conn.query_row(sql, (), |_| Ok(())).unwrap_err();
         assert_eq!(err.sqlstate(), Some(want), "{sql}");
         assert!(
             err.to_string().ends_with(&format!("(SQLSTATE {want})")),
@@ -621,9 +621,9 @@ fn rows_changed() {
     );
     assert_eq!(conn.execute("UPDATE foo SET x = x + 1", ()).unwrap(), 2);
 
-    // A query's cursor is closed, so the table can be dropped.
-    conn.execute("SELECT * FROM foo", ()).unwrap();
-    conn.execute("SELECT * FROM foo WHERE x = ?", [2]).unwrap();
+    // A query isn't executed (see tests/execute_query.rs).
+    let err = conn.execute("SELECT * FROM foo WHERE x = ?", [2]);
+    assert!(matches!(err, Err(Error::ExecuteReturnedResults)));
     conn.execute("DROP TABLE foo", ()).unwrap();
 }
 
@@ -1234,7 +1234,10 @@ fn diagnostics() {
     conn.execute("INSERT INTO foo (id, v) VALUES (1, 1)", ())
         .unwrap();
 
-    let diagnostics = |sql: &str| conn.execute(sql, ()).unwrap_err().diagnostics().cloned();
+    let diagnostics = |sql: &str| {
+        let err = conn.query_row(sql, (), |_| Ok(())).unwrap_err();
+        err.diagnostics().cloned()
+    };
 
     let d = diagnostics("INSERT INTO foo (id, v) VALUES (1, 2)").unwrap();
     assert_eq!(d.constraint_name.as_deref(), Some("FOO_PRIMARY_KEY"));

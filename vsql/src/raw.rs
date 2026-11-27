@@ -285,15 +285,6 @@ pub fn end_savepoint(dbc: SQLHDBC, name: &str, release: bool) -> Result<()> {
     )
 }
 
-pub fn exec_direct(stmt: SQLHSTMT, sql: &str) -> Result<()> {
-    let len: SQLINTEGER = length(sql.len(), "statement")?;
-    check(
-        unsafe { SQLExecDirect(stmt, sql.as_ptr(), len) },
-        SQL_HANDLE_STMT,
-        stmt,
-    )
-}
-
 pub fn prepare(stmt: SQLHSTMT, sql: &str) -> Result<()> {
     let len: SQLINTEGER = length(sql.len(), "statement")?;
     check(
