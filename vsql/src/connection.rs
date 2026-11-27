@@ -151,6 +151,47 @@ impl Connection {
     /// # }
     /// ```
     pub fn transaction_with(&mut self, options: TransactionOptions) -> Result<Transaction<'_>> {
+        self.start_transaction(options)?;
+
+        Ok(Transaction {
+            conn: self,
+            finished: false,
+        })
+    }
+
+    /// Starts a transaction with a savepoint, see [`Savepoint`]. Committing
+    /// the savepoint commits the transaction, and dropping it rolls the
+    /// transaction back.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let mut conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+    ///
+    /// let mut sp = conn.savepoint()?;
+    /// sp.execute("INSERT INTO foo (x) VALUES (1)", ())?;
+    /// sp.rollback()?; // Back to the start, the savepoint is still active.
+    /// sp.execute("INSERT INTO foo (x) VALUES (2)", ())?;
+    /// sp.commit()?;
+    ///
+    /// let x: i64 = conn.query_row("SELECT x FROM foo", (), |row| row.get(0))?;
+    /// assert_eq!(x, 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn savepoint(&mut self) -> Result<Savepoint<'_>> {
+        self.start_transaction(TransactionOptions::default())?;
+        Savepoint::start(self, 1, None, true)
+    }
+
+    /// The same as [`savepoint`](Connection::savepoint), with a name for the
+    /// savepoint (which is quoted, so it can be any string).
+    pub fn savepoint_with_name<T: Into<String>>(&mut self, name: T) -> Result<Savepoint<'_>> {
+        self.start_transaction(TransactionOptions::default())?;
+        Savepoint::start(self, 1, Some(name.into()), true)
+    }
+
+    fn start_transaction(&self, options: TransactionOptions) -> Result<()> {
         let access_mode =
             if options.read_only || options.isolation_level == IsolationLevel::ReadUncommitted {
                 SQL_TRANSACTION_READ_ONLY
@@ -160,10 +201,13 @@ impl Connection {
         raw::start_tran(self.dbc, access_mode, options.isolation_level.code())?;
         self.in_transaction.set(true);
 
-        Ok(Transaction {
-            conn: self,
-            finished: false,
-        })
+        Ok(())
+    }
+
+    fn end_transaction(&self, commit: bool) -> Result<()> {
+        self.in_transaction.set(false);
+
+        raw::end_tran(self.dbc, commit)
     }
 
     /// Whether each statement is committed when it finishes, which is false in
@@ -273,11 +317,21 @@ impl Transaction<'_> {
         self.end(false)
     }
 
+    /// Makes a savepoint in the transaction, see [`Savepoint`].
+    pub fn savepoint(&mut self) -> Result<Savepoint<'_>> {
+        Savepoint::start(self.conn, 1, None, false)
+    }
+
+    /// The same as [`savepoint`](Transaction::savepoint), with a name for the
+    /// savepoint (which is quoted, so it can be any string).
+    pub fn savepoint_with_name<T: Into<String>>(&mut self, name: T) -> Result<Savepoint<'_>> {
+        Savepoint::start(self.conn, 1, Some(name.into()), false)
+    }
+
     fn end(&mut self, commit: bool) -> Result<()> {
         self.finished = true;
-        self.conn.in_transaction.set(false);
 
-        raw::end_tran(self.conn.dbc, commit)
+        self.conn.end_transaction(commit)
     }
 }
 
@@ -294,5 +348,129 @@ impl Drop for Transaction<'_> {
         if !self.finished {
             let _ = self.end(false);
         }
+    }
+}
+
+/// A savepoint in a transaction, see [`Connection::savepoint`] and
+/// [`Transaction::savepoint`], which can be rolled back to any number of
+/// times. Statements are executed through it (it dereferences to the
+/// [`Connection`]), and savepoints can be nested.
+///
+/// Committing a savepoint releases it, so that its changes are part of the
+/// transaction (or savepoint) that it's in. Dropping a savepoint that hasn't
+/// been committed rolls back to it and releases it. The savepoint of
+/// [`Connection::savepoint`] started its transaction, so committing it
+/// commits the transaction, and dropping it rolls the transaction back.
+///
+/// ```
+/// # fn main() -> vsql::Result<()> {
+/// let mut conn = vsql::Connection::open_in_memory()?;
+/// conn.execute("CREATE TABLE foo (x INTEGER)", ())?;
+///
+/// let mut tx = conn.transaction()?;
+/// tx.execute("INSERT INTO foo (x) VALUES (1)", ())?;
+/// {
+///     let sp = tx.savepoint()?;
+///     sp.execute("INSERT INTO foo (x) VALUES (2)", ())?;
+/// } // Rolled back.
+/// tx.commit()?;
+///
+/// let n: i64 = conn.query_row("SELECT COUNT(*) FROM foo", (), |row| row.get(0))?;
+/// assert_eq!(n, 1);
+/// # Ok(())
+/// # }
+/// ```
+pub struct Savepoint<'conn> {
+    conn: &'conn Connection,
+    // The name as it is in SQL (quoted if it was given).
+    name: String,
+    depth: u32,
+    // Whether the savepoint started the transaction, so it ends it.
+    ends_transaction: bool,
+    finished: bool,
+}
+
+impl Savepoint<'_> {
+    fn start(
+        conn: &Connection,
+        depth: u32,
+        name: Option<String>,
+        ends_transaction: bool,
+    ) -> Result<Savepoint<'_>> {
+        let name = match name {
+            Some(name) => format!("\"{}\"", name.replace('"', "\"\"")),
+            None => format!("VSQL_SP_{depth}"),
+        };
+        if let Err(e) = conn.execute(&format!("SAVEPOINT {name}"), ()) {
+            if ends_transaction {
+                let _ = conn.end_transaction(false);
+            }
+            return Err(e);
+        }
+
+        Ok(Savepoint {
+            conn,
+            name,
+            depth,
+            ends_transaction,
+            finished: false,
+        })
+    }
+
+    /// Makes a savepoint in this savepoint.
+    pub fn savepoint(&mut self) -> Result<Savepoint<'_>> {
+        Savepoint::start(self.conn, self.depth + 1, None, false)
+    }
+
+    /// The same as [`savepoint`](Savepoint::savepoint), with a name for the
+    /// savepoint (which is quoted, so it can be any string).
+    pub fn savepoint_with_name<T: Into<String>>(&mut self, name: T) -> Result<Savepoint<'_>> {
+        Savepoint::start(self.conn, self.depth + 1, Some(name.into()), false)
+    }
+
+    /// Releases the savepoint, or commits the transaction that it started.
+    pub fn commit(mut self) -> Result<()> {
+        self.finished = true;
+        if self.ends_transaction {
+            self.conn.end_transaction(true)
+        } else {
+            raw::end_savepoint(self.conn.dbc, &self.name, true)
+        }
+    }
+
+    /// Rolls back to the savepoint, which is still active, so it can be rolled
+    /// back to again (or committed).
+    pub fn rollback(&mut self) -> Result<()> {
+        raw::end_savepoint(self.conn.dbc, &self.name, false)
+    }
+}
+
+impl Deref for Savepoint<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
+}
+
+impl Drop for Savepoint<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if self.ends_transaction {
+            let _ = self.conn.end_transaction(false);
+        } else {
+            let _ = self.rollback();
+            let _ = raw::end_savepoint(self.conn.dbc, &self.name, true);
+        }
+    }
+}
+
+impl std::fmt::Debug for Savepoint<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Savepoint")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
     }
 }

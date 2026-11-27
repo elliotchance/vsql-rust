@@ -28,6 +28,10 @@
 //! are dropped), unless it's in a [`Transaction`]. `START TRANSACTION`,
 //! `COMMIT` and `ROLLBACK` can't be executed as statements.
 //!
+//! A [`Savepoint`] (see [`Transaction::savepoint`] and
+//! [`Connection::savepoint`]) can be rolled back to without rolling back the
+//! whole transaction, and savepoints can be nested.
+//!
 //! # Parameters
 //!
 //! Parameters are `?`, given as `()`, a tuple, an array, [`params!`] or
@@ -42,9 +46,13 @@
 //! | `u64`, `i128`, `u128`                 | `BIGINT` (`NUMERIC` if it's out of range)  |
 //! | `f32`, `f64`                          | `DOUBLE PRECISION`                         |
 //! | `&str`, `String`                      | `CHARACTER VARYING`                        |
+//! | `&[u8]`, `Vec<u8>`, `[u8; N]`         | `BINARY VARYING`                           |
 //! | [`Date`]                              | `DATE`                                     |
 //! | [`Time`]                              | `TIME(6)` (`WITH TIME ZONE` with an offset) |
 //! | [`Timestamp`]                         | `TIMESTAMP(6)` (`WITH TIME ZONE` with an offset) |
+//! | [`Interval`]                          | the `INTERVAL` literal                     |
+//!
+//! A `DECFLOAT` is a [`Value::DecFloat`].
 //!
 //! # Columns
 //!
@@ -52,12 +60,14 @@
 //! |----------------------------------|--------------------------------------|
 //! | `SMALLINT`, `INTEGER`, `BIGINT`  | any integer type (if it's in range)  |
 //! | `REAL`, `DOUBLE PRECISION`       | `f64`, `f32`                         |
-//! | `DECIMAL`, `NUMERIC`             | `String` (exact), `f64`              |
-//! | `CHARACTER`, `VARCHAR`           | `String`                             |
+//! | `DECIMAL`, `NUMERIC`, `DECFLOAT` | `String` (exact), `f64`              |
+//! | `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                             |
+//! | `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]`                 |
 //! | `BOOLEAN`                        | `bool`                               |
 //! | `DATE`                           | [`Date`]                             |
 //! | `TIME (WITH TIME ZONE)`          | [`Time`]                             |
 //! | `TIMESTAMP (WITH TIME ZONE)`     | [`Timestamp`]                        |
+//! | `INTERVAL ...`                   | [`Interval`]                         |
 //!
 //! A `NULL` is only an `Option`. Any column can be read as a [`Value`].
 //!
@@ -65,13 +75,20 @@
 //!
 //! - `chrono`: `NaiveDate`, `NaiveTime`, `NaiveDateTime`, `DateTime<FixedOffset>`
 //!   and `DateTime<Utc>` as parameters and columns.
-//! - `rust_decimal`: `Decimal` as a parameter and a `DECIMAL` or `NUMERIC`
-//!   column.
+//! - `rust_decimal`: `Decimal` as a parameter and a `DECIMAL`, `NUMERIC` or
+//!   `DECFLOAT` column.
 //!
 //! # Errors
 //!
 //! An error from vsql is [`Error::Sql`], with its SQLSTATE (see
-//! [`Error::sqlstate`]), such as `"42P01"` for an undefined table.
+//! [`Error::sqlstate`]), such as `"42P01"` for an undefined table, and its
+//! [`Diagnostics`] (see [`Error::diagnostics`]), such as the constraint that
+//! was violated.
+//!
+//! # Version
+//!
+//! [`version`] is the version of vsql that's compiled into the crate, and
+//! [`build_info`] is how it was built.
 //!
 //! # Threads
 //!
@@ -85,14 +102,16 @@ mod params;
 mod raw;
 mod statement;
 pub mod types;
+mod version;
 
 #[cfg(feature = "chrono")]
 mod with_chrono;
 #[cfg(feature = "rust_decimal")]
 mod with_rust_decimal;
 
-pub use connection::{Connection, IsolationLevel, Transaction, TransactionOptions};
-pub use error::{Error, Result};
+pub use connection::{Connection, IsolationLevel, Savepoint, Transaction, TransactionOptions};
+pub use error::{Diagnostics, Error, Result};
 pub use params::{params_from_iter, Params, ParamsFromIter};
 pub use statement::{Column, MappedRows, Row, RowIndex, Rows, Statement};
-pub use types::{Date, FromSql, Time, Timestamp, ToSql, Type, Value};
+pub use types::{Date, FromSql, Interval, IntervalFields, Time, Timestamp, ToSql, Type, Value};
+pub use version::{build_info, version, version_number, BuildInfo};

@@ -20,14 +20,21 @@ pub enum Type {
     DoublePrecision,
     Decimal,
     Numeric,
+    DecFloat,
     Character,
     CharacterVarying,
+    CharacterLargeObject,
+    Binary,
+    BinaryVarying,
+    BinaryLargeObject,
     Boolean,
     Date,
     Time,
     TimeWithTimeZone,
     Timestamp,
     TimestampWithTimeZone,
+    /// An INTERVAL, such as INTERVAL YEAR TO MONTH.
+    Interval(IntervalFields),
     /// A data type code that isn't known.
     Other(i16),
 }
@@ -42,15 +49,23 @@ impl Type {
             SQL_FLOAT | SQL_DOUBLE => Type::DoublePrecision,
             SQL_DECIMAL => Type::Decimal,
             SQL_NUMERIC => Type::Numeric,
+            SQL_DECFLOAT => Type::DecFloat,
             SQL_CHAR => Type::Character,
             SQL_VARCHAR => Type::CharacterVarying,
+            SQL_CLOB => Type::CharacterLargeObject,
+            SQL_BINARY => Type::Binary,
+            SQL_VARBINARY => Type::BinaryVarying,
+            SQL_BLOB => Type::BinaryLargeObject,
             SQL_BOOLEAN => Type::Boolean,
             SQL_TYPE_DATE => Type::Date,
             SQL_TYPE_TIME => Type::Time,
             SQL_TYPE_TIME_WITH_TIMEZONE => Type::TimeWithTimeZone,
             SQL_TYPE_TIMESTAMP => Type::Timestamp,
             SQL_TYPE_TIMESTAMP_WITH_TIMEZONE => Type::TimestampWithTimeZone,
-            other => Type::Other(other),
+            other => match IntervalFields::from_code(other) {
+                Some(fields) => Type::Interval(fields),
+                None => Type::Other(other),
+            },
         }
     }
 
@@ -64,14 +79,20 @@ impl Type {
             Type::DoublePrecision => "DOUBLE PRECISION",
             Type::Decimal => "DECIMAL",
             Type::Numeric => "NUMERIC",
+            Type::DecFloat => "DECFLOAT",
             Type::Character => "CHARACTER",
             Type::CharacterVarying => "CHARACTER VARYING",
+            Type::CharacterLargeObject => "CHARACTER LARGE OBJECT",
+            Type::Binary => "BINARY",
+            Type::BinaryVarying => "BINARY VARYING",
+            Type::BinaryLargeObject => "BINARY LARGE OBJECT",
             Type::Boolean => "BOOLEAN",
             Type::Date => "DATE",
             Type::Time => "TIME",
             Type::TimeWithTimeZone => "TIME WITH TIME ZONE",
             Type::Timestamp => "TIMESTAMP",
             Type::TimestampWithTimeZone => "TIMESTAMP WITH TIME ZONE",
+            Type::Interval(fields) => fields.type_name(),
             Type::Other(_) => "UNKNOWN",
         }
     }
@@ -137,6 +158,234 @@ impl fmt::Display for Time {
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.date, self.time)
+    }
+}
+
+/// The fields of an INTERVAL type, such as YEAR TO MONTH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntervalFields {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    YearToMonth,
+    DayToHour,
+    DayToMinute,
+    DayToSecond,
+    HourToMinute,
+    HourToSecond,
+    MinuteToSecond,
+}
+
+impl IntervalFields {
+    fn from_code(code: SQLSMALLINT) -> Option<IntervalFields> {
+        Some(match code {
+            SQL_INTERVAL_YEAR => IntervalFields::Year,
+            SQL_INTERVAL_MONTH => IntervalFields::Month,
+            SQL_INTERVAL_DAY => IntervalFields::Day,
+            SQL_INTERVAL_HOUR => IntervalFields::Hour,
+            SQL_INTERVAL_MINUTE => IntervalFields::Minute,
+            SQL_INTERVAL_SECOND => IntervalFields::Second,
+            SQL_INTERVAL_YEAR_TO_MONTH => IntervalFields::YearToMonth,
+            SQL_INTERVAL_DAY_TO_HOUR => IntervalFields::DayToHour,
+            SQL_INTERVAL_DAY_TO_MINUTE => IntervalFields::DayToMinute,
+            SQL_INTERVAL_DAY_TO_SECOND => IntervalFields::DayToSecond,
+            SQL_INTERVAL_HOUR_TO_MINUTE => IntervalFields::HourToMinute,
+            SQL_INTERVAL_HOUR_TO_SECOND => IntervalFields::HourToSecond,
+            SQL_INTERVAL_MINUTE_TO_SECOND => IntervalFields::MinuteToSecond,
+            _ => return None,
+        })
+    }
+
+    fn type_name(self) -> &'static str {
+        match self {
+            IntervalFields::Year => "INTERVAL YEAR",
+            IntervalFields::Month => "INTERVAL MONTH",
+            IntervalFields::Day => "INTERVAL DAY",
+            IntervalFields::Hour => "INTERVAL HOUR",
+            IntervalFields::Minute => "INTERVAL MINUTE",
+            IntervalFields::Second => "INTERVAL SECOND",
+            IntervalFields::YearToMonth => "INTERVAL YEAR TO MONTH",
+            IntervalFields::DayToHour => "INTERVAL DAY TO HOUR",
+            IntervalFields::DayToMinute => "INTERVAL DAY TO MINUTE",
+            IntervalFields::DayToSecond => "INTERVAL DAY TO SECOND",
+            IntervalFields::HourToMinute => "INTERVAL HOUR TO MINUTE",
+            IntervalFields::HourToSecond => "INTERVAL HOUR TO SECOND",
+            IntervalFields::MinuteToSecond => "INTERVAL MINUTE TO SECOND",
+        }
+    }
+
+    /// Whether it's a year-month interval (YEAR, MONTH or YEAR TO MONTH),
+    /// otherwise it's a day-time interval.
+    pub fn is_year_month(self) -> bool {
+        matches!(
+            self,
+            IntervalFields::Year | IntervalFields::Month | IntervalFields::YearToMonth
+        )
+    }
+
+    /// The first and last field.
+    fn range(self) -> (Field, Field) {
+        match self {
+            IntervalFields::Year => (Field::Year, Field::Year),
+            IntervalFields::Month => (Field::Month, Field::Month),
+            IntervalFields::Day => (Field::Day, Field::Day),
+            IntervalFields::Hour => (Field::Hour, Field::Hour),
+            IntervalFields::Minute => (Field::Minute, Field::Minute),
+            IntervalFields::Second => (Field::Second, Field::Second),
+            IntervalFields::YearToMonth => (Field::Year, Field::Month),
+            IntervalFields::DayToHour => (Field::Day, Field::Hour),
+            IntervalFields::DayToMinute => (Field::Day, Field::Minute),
+            IntervalFields::DayToSecond => (Field::Day, Field::Second),
+            IntervalFields::HourToMinute => (Field::Hour, Field::Minute),
+            IntervalFields::HourToSecond => (Field::Hour, Field::Second),
+            IntervalFields::MinuteToSecond => (Field::Minute, Field::Second),
+        }
+    }
+
+    /// The fields from the first to the last.
+    fn fields(self) -> impl Iterator<Item = Field> {
+        let (first, last) = self.range();
+        FIELDS
+            .iter()
+            .copied()
+            .filter(move |field| (first..=last).contains(field))
+    }
+}
+
+impl fmt::Display for IntervalFields {
+    /// Such as "YEAR TO MONTH".
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.type_name()["INTERVAL ".len()..])
+    }
+}
+
+/// A field of an interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Field {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+}
+
+const FIELDS: [Field; 6] = [
+    Field::Year,
+    Field::Month,
+    Field::Day,
+    Field::Hour,
+    Field::Minute,
+    Field::Second,
+];
+
+impl Field {
+    fn name(self) -> &'static str {
+        match self {
+            Field::Year => "YEAR",
+            Field::Month => "MONTH",
+            Field::Day => "DAY",
+            Field::Hour => "HOUR",
+            Field::Minute => "MINUTE",
+            Field::Second => "SECOND",
+        }
+    }
+
+    /// The size of the field in months (YEAR and MONTH) or microseconds.
+    fn size(self) -> u64 {
+        match self {
+            Field::Year => 12,
+            Field::Month => 1,
+            Field::Day => 86_400_000_000,
+            Field::Hour => 3_600_000_000,
+            Field::Minute => 60_000_000,
+            Field::Second => 1_000_000,
+        }
+    }
+
+    /// The separator before the field, when it isn't the first.
+    fn separator(self) -> char {
+        match self {
+            Field::Month => '-',
+            Field::Hour => ' ',
+            _ => ':',
+        }
+    }
+}
+
+/// An INTERVAL. A year-month interval (see [`IntervalFields::is_year_month`])
+/// is a number of months, and a day-time interval is a number of
+/// microseconds. They're negative for a negative interval.
+///
+/// ```
+/// use vsql::{Interval, IntervalFields};
+///
+/// # fn main() -> vsql::Result<()> {
+/// let conn = vsql::Connection::open_in_memory()?;
+/// let i: Interval = conn.query_row("VALUES INTERVAL '-1-02' YEAR TO MONTH", (), |r| r.get(0))?;
+/// assert_eq!(
+///     i,
+///     Interval {
+///         fields: IntervalFields::YearToMonth,
+///         months: -14,
+///         microseconds: 0,
+///     }
+/// );
+/// assert_eq!(i.to_string(), "INTERVAL '-1-02' YEAR(2) TO MONTH");
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Interval {
+    pub fields: IntervalFields,
+    /// The months of a year-month interval (a multiple of 12 for YEAR), or 0.
+    pub months: i64,
+    /// The microseconds of a day-time interval, or 0. The fields that aren't
+    /// in the interval are left out (so 1.5 days is 1 day as an INTERVAL DAY).
+    pub microseconds: i64,
+}
+
+impl fmt::Display for Interval {
+    /// The interval as a literal, such as `INTERVAL '-1-02' YEAR(2) TO MONTH`.
+    /// The first field has the precision it needs (at least 2), and seconds
+    /// have 6 fractional digits.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (first, last) = self.fields.range();
+        let value = if self.fields.is_year_month() {
+            self.months
+        } else {
+            self.microseconds
+        };
+        let mut rest = value.unsigned_abs();
+        let leading = rest / first.size();
+        rest %= first.size();
+        let sign = if value < 0 { "-" } else { "" };
+        write!(f, "INTERVAL '{sign}{leading}")?;
+        for field in self.fields.fields().skip(1) {
+            write!(f, "{}{:02}", field.separator(), rest / field.size())?;
+            rest %= field.size();
+        }
+        if last == Field::Second {
+            write!(f, ".{rest:06}")?;
+        }
+
+        let precision = leading.to_string().len().max(2);
+        write!(f, "' {}({precision}", first.name())?;
+        if first == Field::Second {
+            f.write_str(", 6")?;
+        }
+        f.write_str(")")?;
+        if last != first {
+            write!(f, " TO {}", last.name())?;
+            if last == Field::Second {
+                f.write_str("(6)")?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -208,6 +457,63 @@ fn parse_time(s: &str) -> Option<Time> {
     Some(time)
 }
 
+/// A number without a sign.
+fn number(s: &str) -> Option<u64> {
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        s.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// An interval literal, such as "INTERVAL '-1-02' YEAR(2) TO MONTH", which
+/// has the fields of its type.
+fn parse_interval(s: &str, fields: IntervalFields) -> Option<Interval> {
+    let (body, _) = s.strip_prefix("INTERVAL '")?.split_once('\'')?;
+    let (negative, mut rest) = match body.strip_prefix('-') {
+        Some(body) => (true, body),
+        None => (false, body),
+    };
+
+    let all: Vec<Field> = fields.fields().collect();
+    let mut total: u64 = 0;
+    for (i, field) in all.iter().enumerate() {
+        let part = match all.get(i + 1) {
+            Some(next) => {
+                let (part, after) = rest.split_once(next.separator())?;
+                rest = after;
+                part
+            }
+            None => rest,
+        };
+        let (part, fraction) = match part.split_once('.') {
+            Some((part, fraction)) if *field == Field::Second && fraction.len() <= 6 => (
+                part,
+                number(fraction)? * 10u64.pow(6 - fraction.len() as u32),
+            ),
+            Some(_) => return None,
+            None => (part, 0),
+        };
+        total = total
+            .checked_add(number(part)?.checked_mul(field.size())?)?
+            .checked_add(fraction)?;
+    }
+
+    let total = i64::try_from(total).ok()?;
+    let total = if negative { -total } else { total };
+    let (months, microseconds) = if fields.is_year_month() {
+        (total, 0)
+    } else {
+        (0, total)
+    };
+
+    Some(Interval {
+        fields,
+        months,
+        microseconds,
+    })
+}
+
 fn parse_timestamp(s: &str) -> Option<Timestamp> {
     let (date, time) = s.split_once(' ')?;
 
@@ -221,6 +527,7 @@ fn parse_timestamp(s: &str) -> Option<Timestamp> {
 /// and a parameter (see [`ToSql`]) is sent as the SQL type of its [`Value`],
 /// which is cast to the type it's used as.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Value {
     /// NULL.
     Null,
@@ -233,14 +540,23 @@ pub enum Value {
     /// A DECIMAL or NUMERIC, which is exact, as a decimal string such as
     /// `"-1.25"` (a parameter is a NUMERIC).
     Numeric(String),
-    /// A CHARACTER or CHARACTER VARYING (a parameter is a CHARACTER VARYING).
+    /// A DECFLOAT, which is exact, as a decimal string that may have an
+    /// exponent, such as `"-1.25"` or `"1.5E+20"`.
+    DecFloat(String),
+    /// A CHARACTER, CHARACTER VARYING or CHARACTER LARGE OBJECT (a parameter
+    /// is a CHARACTER VARYING).
     Text(String),
+    /// A BINARY, BINARY VARYING or BINARY LARGE OBJECT (a parameter is a
+    /// BINARY VARYING).
+    Binary(Vec<u8>),
     /// A DATE.
     Date(Date),
     /// A TIME (WITH TIME ZONE).
     Time(Time),
     /// A TIMESTAMP (WITH TIME ZONE).
     Timestamp(Timestamp),
+    /// An INTERVAL.
+    Interval(Interval),
 }
 
 /// How a column is read with SQLGetData.
@@ -250,6 +566,7 @@ pub(crate) enum Kind {
     Double,
     Real,
     Text,
+    Binary,
 }
 
 impl Kind {
@@ -258,6 +575,7 @@ impl Kind {
             Type::SmallInt | Type::Integer | Type::BigInt => Kind::Integer,
             Type::Real => Kind::Real,
             Type::DoublePrecision => Kind::Double,
+            Type::Binary | Type::BinaryVarying | Type::BinaryLargeObject => Kind::Binary,
             _ => Kind::Text,
         }
     }
@@ -274,6 +592,10 @@ impl Value {
                 _ => return Err(invalid(&s)),
             },
             Type::Decimal | Type::Numeric => Value::Numeric(s),
+            Type::DecFloat => Value::DecFloat(s),
+            Type::Interval(fields) => {
+                Value::Interval(parse_interval(&s, fields).ok_or_else(|| invalid(&s))?)
+            }
             Type::Date => Value::Date(
                 literal(&s, "DATE")
                     .and_then(parse_date)
@@ -351,12 +673,23 @@ impl Value {
                     .map_err(|_| invalid(format!("{s} has too many digits")))?;
                 text(SQL_NUMERIC, precision, scale, s.clone())
             }
+            // 34 is the precision of a DECFLOAT, and vsql checks the string.
+            Value::DecFloat(s) => text(SQL_DECFLOAT, 34, 0, s.clone()),
             Value::Text(s) => {
                 // A CHARACTER VARYING as long as the string (which can't be 0).
                 let chars = SQLINTEGER::try_from(s.chars().count().max(1))
                     .map_err(|_| invalid("the string is too long".to_string()))?;
                 text(SQL_VARCHAR, chars, 0, s.clone())
             }
+            Value::Binary(b) => Param {
+                value_type: SQL_VARBINARY,
+                parameter_type: SQL_VARBINARY,
+                // A BINARY VARYING as long as the value (which can't be 0).
+                column_size: SQLINTEGER::try_from(b.len().max(1))
+                    .map_err(|_| invalid("the binary string is too long".to_string()))?,
+                decimal_digits: 0,
+                value: ParamValue::Binary(b.clone()),
+            },
             Value::Date(d) => {
                 let s = d.to_string();
                 text(SQL_TYPE_DATE, s.len() as SQLINTEGER, 0, s)
@@ -378,6 +711,11 @@ impl Value {
                     SQL_TYPE_TIMESTAMP
                 };
                 text(ty, s.len() as SQLINTEGER, 6, s)
+            }
+            // The literal is cast to the parameter's interval type.
+            Value::Interval(i) => {
+                let s = i.to_string();
+                text(SQL_VARCHAR, s.len() as SQLINTEGER, 0, s)
             }
         })
     }
@@ -459,6 +797,30 @@ impl ToSql for str {
 impl ToSql for String {
     fn to_sql(&self) -> Result<Value> {
         Ok(Value::Text(self.clone()))
+    }
+}
+
+impl ToSql for [u8] {
+    fn to_sql(&self) -> Result<Value> {
+        Ok(Value::Binary(self.to_vec()))
+    }
+}
+
+impl ToSql for Vec<u8> {
+    fn to_sql(&self) -> Result<Value> {
+        Ok(Value::Binary(self.clone()))
+    }
+}
+
+impl<const N: usize> ToSql for [u8; N] {
+    fn to_sql(&self) -> Result<Value> {
+        Ok(Value::Binary(self.to_vec()))
+    }
+}
+
+impl ToSql for Interval {
+    fn to_sql(&self) -> Result<Value> {
+        Ok(Value::Interval(*self))
     }
 }
 
@@ -557,14 +919,16 @@ macro_rules! from_sql_integer {
 
 from_sql_integer!(i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
 
-/// A REAL or DOUBLE PRECISION, an integer, or a DECIMAL or NUMERIC (which may
-/// lose precision).
+/// A REAL or DOUBLE PRECISION, an integer, or a DECIMAL, NUMERIC or DECFLOAT
+/// (which may lose precision).
 impl FromSql for f64 {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         match value {
             Value::Double(d) => Ok(*d),
             Value::Integer(i) => Ok(*i as f64),
-            Value::Numeric(s) => s.parse().map_err(|e| FromSqlError::Other(Box::new(e))),
+            Value::Numeric(s) | Value::DecFloat(s) => {
+                s.parse().map_err(|e| FromSqlError::Other(Box::new(e)))
+            }
             _ => Err(FromSqlError::InvalidType),
         }
     }
@@ -577,11 +941,12 @@ impl FromSql for f32 {
     }
 }
 
-/// A CHARACTER or CHARACTER VARYING, or a DECIMAL or NUMERIC.
+/// A CHARACTER, CHARACTER VARYING or CHARACTER LARGE OBJECT, or a DECIMAL,
+/// NUMERIC or DECFLOAT.
 impl FromSql for String {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         match value {
-            Value::Text(s) | Value::Numeric(s) => Ok(s.clone()),
+            Value::Text(s) | Value::Numeric(s) | Value::DecFloat(s) => Ok(s.clone()),
             _ => Err(FromSqlError::InvalidType),
         }
     }
@@ -609,6 +974,40 @@ impl FromSql for Timestamp {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         match value {
             Value::Timestamp(t) => Ok(*t),
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+/// A BINARY, BINARY VARYING or BINARY LARGE OBJECT.
+impl FromSql for Vec<u8> {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Binary(b) => Ok(b.clone()),
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+/// A BINARY, BINARY VARYING or BINARY LARGE OBJECT of N octets.
+impl<const N: usize> FromSql for [u8; N] {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Binary(b) => match <[u8; N]>::try_from(b.as_slice()) {
+                Ok(array) => Ok(array),
+                Err(_) => Err(FromSqlError::Other(
+                    format!("{} octets, not {N}", b.len()).into(),
+                )),
+            },
+            _ => Err(FromSqlError::InvalidType),
+        }
+    }
+}
+
+impl FromSql for Interval {
+    fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
+        match value {
+            Value::Interval(i) => Ok(*i),
             _ => Err(FromSqlError::InvalidType),
         }
     }

@@ -14,11 +14,15 @@ impl ToSql for Decimal {
     }
 }
 
-/// A DECIMAL or NUMERIC (or an integer).
+/// A DECIMAL, NUMERIC or DECFLOAT (or an integer).
 impl FromSql for Decimal {
     fn from_sql(value: &Value) -> Result<Self, FromSqlError> {
         match value {
             Value::Numeric(s) => Decimal::from_str(s).map_err(|e| FromSqlError::Other(Box::new(e))),
+            // A DECFLOAT may have an exponent.
+            Value::DecFloat(s) => Decimal::from_str(s)
+                .or_else(|_| Decimal::from_scientific(s))
+                .map_err(|e| FromSqlError::Other(Box::new(e))),
             Value::Integer(i) => Ok(Decimal::from(*i)),
             _ => Err(FromSqlError::InvalidType),
         }

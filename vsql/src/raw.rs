@@ -7,7 +7,7 @@ use std::sync::Once;
 
 use vsql_sys::*;
 
-use crate::error::{Error, Result};
+use crate::error::{Diagnostics, Error, Result};
 
 /// The error for a return code (SQL_NO_DATA isn't one), from the diagnostics
 /// of the handle.
@@ -23,6 +23,42 @@ fn sql_error(sqlstate: &str, message: &str) -> Error {
     Error::Sql {
         sqlstate: sqlstate.to_string(),
         message: message.to_string(),
+        diagnostics: Box::default(),
+    }
+}
+
+/// A string field of the first diagnostic record, which is None if it's empty
+/// (or can't be read).
+fn diag_field(handle_type: SQLSMALLINT, handle: SQLINTEGER, field: SQLSMALLINT) -> Option<String> {
+    let mut buf = vec![0u8; 129];
+    loop {
+        let mut length: SQLSMALLINT = 0;
+        let rc = unsafe {
+            SQLGetDiagField(
+                handle_type,
+                handle,
+                1,
+                field,
+                buf.as_mut_ptr() as SQLPOINTER,
+                buf.len() as SQLSMALLINT,
+                &mut length,
+            )
+        };
+        if rc != SQL_SUCCESS && rc != SQL_SUCCESS_WITH_INFO {
+            return None;
+        }
+
+        // The string was truncated.
+        let length = usize::try_from(length).ok()?;
+        if length >= buf.len() {
+            buf.resize(length + 1, 0);
+            continue;
+        }
+        if length == 0 {
+            return None;
+        }
+
+        return Some(String::from_utf8_lossy(&buf[..length]).into_owned());
     }
 }
 
@@ -55,9 +91,22 @@ fn diagnostics(handle_type: SQLSMALLINT, handle: SQLINTEGER) -> Error {
             continue;
         }
 
+        let field = |field| diag_field(handle_type, handle, field);
+        let diagnostics = Diagnostics {
+            constraint_catalog: field(SQL_DIAG_CONSTRAINT_CATALOG),
+            constraint_schema: field(SQL_DIAG_CONSTRAINT_SCHEMA),
+            constraint_name: field(SQL_DIAG_CONSTRAINT_NAME),
+            catalog_name: field(SQL_DIAG_CATALOG_NAME),
+            schema_name: field(SQL_DIAG_SCHEMA_NAME),
+            table_name: field(SQL_DIAG_TABLE_NAME),
+            column_name: field(SQL_DIAG_COLUMN_NAME),
+            cursor_name: field(SQL_DIAG_CURSOR_NAME),
+        };
+
         return Error::Sql {
             sqlstate: String::from_utf8_lossy(&sqlstate[..5]).into_owned(),
             message: String::from_utf8_lossy(&message[..length]).into_owned(),
+            diagnostics: Box::new(diagnostics),
         };
     }
 }
@@ -156,6 +205,36 @@ pub fn set_autocommit(dbc: SQLHDBC, on: bool) -> Result<()> {
     )
 }
 
+/// Reads a string from SQLGetInfo.
+pub fn get_info(dbc: SQLHDBC, info_type: SQLSMALLINT) -> Result<String> {
+    let mut buf = vec![0u8; 64];
+    loop {
+        let mut length: SQLSMALLINT = 0;
+        check(
+            unsafe {
+                SQLGetInfo(
+                    dbc,
+                    info_type,
+                    buf.as_mut_ptr() as SQLPOINTER,
+                    buf.len() as SQLSMALLINT,
+                    &mut length,
+                )
+            },
+            SQL_HANDLE_DBC,
+            dbc,
+        )?;
+
+        // The string was truncated.
+        let length = usize::try_from(length).unwrap_or(0);
+        if length >= buf.len() {
+            buf.resize(length + 1, 0);
+            continue;
+        }
+
+        return Ok(String::from_utf8_lossy(&buf[..length]).into_owned());
+    }
+}
+
 pub fn start_tran(
     dbc: SQLHDBC,
     access_mode: SQLINTEGER,
@@ -170,6 +249,35 @@ pub fn start_tran(
 
 pub fn end_tran(dbc: SQLHDBC, commit: bool) -> Result<()> {
     let completion = if commit { SQL_COMMIT } else { SQL_ROLLBACK };
+    check(
+        unsafe { SQLEndTran(SQL_HANDLE_DBC, dbc, completion) },
+        SQL_HANDLE_DBC,
+        dbc,
+    )
+}
+
+/// Rolls back to (or releases) a savepoint, which is named as it is in SQL
+/// (an identifier that isn't quoted is upper case).
+pub fn end_savepoint(dbc: SQLHDBC, name: &str, release: bool) -> Result<()> {
+    // libvsql copies the name.
+    let len: SQLINTEGER = length(name.len(), "savepoint name")?;
+    check(
+        unsafe {
+            SQLSetConnectAttr(
+                dbc,
+                SQL_ATTR_SAVEPOINT_NAME,
+                name.as_ptr() as SQLPOINTER,
+                len,
+            )
+        },
+        SQL_HANDLE_DBC,
+        dbc,
+    )?;
+    let completion = if release {
+        SQL_SAVEPOINT_NAME_RELEASE
+    } else {
+        SQL_SAVEPOINT_NAME_ROLLBACK
+    };
     check(
         unsafe { SQLEndTran(SQL_HANDLE_DBC, dbc, completion) },
         SQL_HANDLE_DBC,
@@ -209,6 +317,7 @@ pub enum ParamValue {
     BigInt(SQLBIGINT),
     Double(SQLDOUBLE),
     Text(String),
+    Binary(Vec<u8>),
 }
 
 /// Executes the prepared statement with the parameters, which are bound for
@@ -244,6 +353,16 @@ fn bind_and_execute(stmt: SQLHSTMT, params: &mut [Param], inds: &mut [SQLINTEGER
                 *ind = length(s.len(), "parameter")?;
                 (s.as_mut_ptr() as SQLPOINTER, *ind)
             }
+            // An empty binary string has a length of 0, which only needs a
+            // pointer.
+            ParamValue::Binary(b) if b.is_empty() => {
+                *ind = 0;
+                (b"\0".as_ptr() as SQLPOINTER, 0)
+            }
+            ParamValue::Binary(b) => {
+                *ind = length(b.len(), "parameter")?;
+                (b.as_mut_ptr() as SQLPOINTER, *ind)
+            }
         };
         check(
             unsafe {
@@ -271,6 +390,42 @@ fn bind_and_execute(stmt: SQLHSTMT, params: &mut [Param], inds: &mut [SQLINTEGER
 pub fn row_count(stmt: SQLHSTMT) -> Result<usize> {
     let mut n = 0;
     check(unsafe { SQLRowCount(stmt, &mut n) }, SQL_HANDLE_STMT, stmt)?;
+
+    Ok(usize::try_from(n).unwrap_or(0))
+}
+
+/// The number of dynamic parameters of a prepared statement, which is the
+/// number of records of its IPD.
+pub fn num_params(stmt: SQLHSTMT) -> Result<usize> {
+    let mut ipd: SQLHDESC = 0;
+    check(
+        unsafe {
+            SQLGetStmtAttr(
+                stmt,
+                SQL_ATTR_IMP_PARAM_DESC,
+                &mut ipd as *mut SQLHDESC as SQLPOINTER,
+                0,
+                ptr::null_mut(),
+            )
+        },
+        SQL_HANDLE_STMT,
+        stmt,
+    )?;
+    let mut n: SQLSMALLINT = 0;
+    check(
+        unsafe {
+            SQLGetDescField(
+                ipd,
+                0,
+                SQL_DESC_COUNT,
+                &mut n as *mut SQLSMALLINT as SQLPOINTER,
+                0,
+                ptr::null_mut(),
+            )
+        },
+        SQL_HANDLE_DESC,
+        ipd,
+    )?;
 
     Ok(usize::try_from(n).unwrap_or(0))
 }
@@ -435,5 +590,43 @@ pub fn get_string(stmt: SQLHSTMT, n: usize, buf: &mut Vec<u8>) -> Result<Option<
         return String::from_utf8(s)
             .map(Some)
             .map_err(|_| sql_error("22021", "a string isn't valid UTF-8"));
+    }
+}
+
+/// Reads a binary string column (starting at 1) of the fetched row, it's None
+/// for a NULL. A value that doesn't fit in the buffer is read in pieces.
+pub fn get_binary(stmt: SQLHSTMT, n: usize) -> Result<Option<Vec<u8>>> {
+    let n: SQLSMALLINT = length(n, "column list")?;
+    let mut value: Vec<u8> = Vec::new();
+    let mut size: usize = 256;
+    loop {
+        let start = value.len();
+        value.resize(start + size, 0);
+        let mut ind: SQLINTEGER = 0;
+        let rc = unsafe {
+            SQLGetData(
+                stmt,
+                n,
+                SQL_VARBINARY,
+                value[start..].as_mut_ptr() as SQLPOINTER,
+                size as SQLINTEGER,
+                &mut ind,
+            )
+        };
+        check(rc, SQL_HANDLE_STMT, stmt)?;
+        if ind == SQL_NULL_DATA {
+            return Ok(None);
+        }
+
+        // The rest of the value (ind) didn't fit, so the buffer is full (there
+        // isn't a null terminator), and the next piece is the rest of it.
+        let ind = ind as usize;
+        if rc == SQL_SUCCESS_WITH_INFO && ind > size {
+            size = ind - size;
+            continue;
+        }
+
+        value.truncate(start + ind);
+        return Ok(Some(value));
     }
 }
