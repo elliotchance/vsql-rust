@@ -628,6 +628,26 @@ fn rows_changed() {
 }
 
 #[test]
+fn query_on_a_statement_that_isnt_a_query() {
+    let conn = memory();
+    conn.execute("CREATE TABLE foo (x INTEGER)", ()).unwrap();
+
+    let mut stmt = conn.prepare("INSERT INTO foo (x) VALUES (?)").unwrap();
+    let mut rows = stmt.query([1]).unwrap();
+    assert!(rows.columns().is_empty());
+    assert!(rows.next().is_none());
+    drop(rows);
+    let result = stmt.query_row([2], |r| r.get::<_, i64>(0));
+    assert!(matches!(result, Err(Error::QueryReturnedNoRows)));
+
+    // Both were inserted (and committed).
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM foo", (), |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+#[test]
 fn prepared_statements() {
     let conn = memory();
     conn.execute("CREATE TABLE foo (x INTEGER)", ()).unwrap();

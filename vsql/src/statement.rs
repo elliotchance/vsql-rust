@@ -67,7 +67,8 @@ impl<'conn> Statement<'conn> {
 
     /// Executes the query, with a `?` for each of the parameters. The rows are
     /// an iterator, and the cursor is closed (which commits the statement,
-    /// unless it's in a transaction) when they're dropped.
+    /// unless it's in a transaction) when they're dropped. A statement that
+    /// isn't a query (such as an INSERT) is executed, and has no rows.
     ///
     /// ```
     /// # fn main() -> vsql::Result<()> {
@@ -237,6 +238,12 @@ impl Rows<'_> {
 
         // Dropped if it fails, which closes the cursor.
         let n = raw::num_result_cols(stmt)?;
+        // A statement that isn't a query (such as an INSERT) has no columns
+        // and no cursor, so it has no rows.
+        if n == 0 {
+            rows.open = false;
+            return Ok(rows);
+        }
         let mut columns = Vec::with_capacity(n);
         for i in 1..=n {
             let d = raw::describe_col(stmt, i)?;
