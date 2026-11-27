@@ -303,6 +303,72 @@ pub fn prepare(stmt: SQLHSTMT, sql: &str) -> Result<()> {
     )
 }
 
+/// A name for a catalog routine.
+fn name_arg(name: &str) -> Result<(*const SQLCHAR, SQLSMALLINT)> {
+    Ok((name.as_ptr(), length(name.len(), "name")?))
+}
+
+/// Executes SQLTables for the tables of a schema, with any table type. The
+/// names are LIKE patterns.
+pub fn tables(stmt: SQLHSTMT, schema: &str, table: &str) -> Result<()> {
+    let (s, s_len) = name_arg(schema)?;
+    let (t, t_len) = name_arg(table)?;
+    check(
+        unsafe { SQLTables(stmt, ptr::null(), 0, s, s_len, t, t_len, ptr::null(), 0) },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+}
+
+/// Executes SQLColumns for the columns of tables. The names are LIKE patterns.
+pub fn columns(stmt: SQLHSTMT, schema: &str, table: &str) -> Result<()> {
+    let (s, s_len) = name_arg(schema)?;
+    let (t, t_len) = name_arg(table)?;
+    check(
+        unsafe { SQLColumns(stmt, ptr::null(), 0, s, s_len, t, t_len, ptr::null(), 0) },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+}
+
+/// Executes SQLPrimaryKeys for the PRIMARY KEY of a table.
+pub fn primary_keys(stmt: SQLHSTMT, schema: &str, table: &str) -> Result<()> {
+    let (s, s_len) = name_arg(schema)?;
+    let (t, t_len) = name_arg(table)?;
+    check(
+        unsafe { SQLPrimaryKeys(stmt, ptr::null(), 0, s, s_len, t, t_len) },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+}
+
+/// Executes SQLForeignKeys for the foreign keys of a table.
+pub fn foreign_keys(stmt: SQLHSTMT, schema: &str, table: &str) -> Result<()> {
+    let (s, s_len) = name_arg(schema)?;
+    let (t, t_len) = name_arg(table)?;
+    check(
+        unsafe {
+            SQLForeignKeys(
+                stmt,
+                ptr::null(),
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                0,
+                s,
+                s_len,
+                t,
+                t_len,
+            )
+        },
+        SQL_HANDLE_STMT,
+        stmt,
+    )
+}
+
 /// A parameter for [`execute`].
 pub struct Param {
     pub value_type: SQLSMALLINT,

@@ -94,6 +94,13 @@
 //!   `DECFLOAT` column.
 //! - `r2d2`, `deadpool`: a connection pool of a database file, see [`pool`].
 //!
+//! # Schema
+//!
+//! [`Connection::tables`], [`columns`](Connection::columns),
+//! [`primary_key`](Connection::primary_key) and
+//! [`foreign_keys`](Connection::foreign_keys) describe the tables of a schema,
+//! and [`table_exists`](Connection::table_exists) checks for one.
+//!
 //! # Errors
 //!
 //! An error from vsql is [`Error::Sql`], with its SQLSTATE (see
@@ -119,6 +126,7 @@ mod params;
 #[cfg(any(feature = "r2d2", feature = "deadpool"))]
 pub mod pool;
 mod raw;
+mod schema;
 mod sql;
 mod statement;
 pub mod types;
@@ -137,6 +145,7 @@ pub use connection::{
 pub use error::{Diagnostics, Error, Result};
 pub use optional::OptionalExtension;
 pub use params::{params_from_iter, Params, ParamsFromIter};
+pub use schema::{ForeignKey, ForeignKeyAction, PrimaryKey, Table, TableColumn, TableType};
 pub use statement::{AndThenRows, Column, MappedRows, Row, RowIndex, Rows, Statement};
 pub use types::{Date, FromSql, Interval, IntervalFields, Time, Timestamp, ToSql, Type, Value};
 pub use version::{build_info, version, version_number, BuildInfo};
