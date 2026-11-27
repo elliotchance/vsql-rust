@@ -6,7 +6,7 @@ use vsql_sys::*;
 
 use crate::connection::Connection;
 use crate::error::{Error, Result};
-use crate::params::Params;
+use crate::params::{self, NamedParams, Params};
 use crate::raw;
 use crate::sql;
 use crate::types::{FromSql, Kind, Type, Value};
@@ -22,6 +22,7 @@ pub struct Statement<'conn> {
     stmt: SQLHSTMT,
     // Described the first time they're needed.
     columns: OnceCell<Vec<Column>>,
+    named: Option<NamedParams>,
 }
 
 impl<'conn> Statement<'conn> {
@@ -30,15 +31,56 @@ impl<'conn> Statement<'conn> {
             conn,
             stmt: raw::alloc_stmt(conn.dbc())?,
             columns: OnceCell::new(),
+            named: None,
         })
     }
 
     pub(crate) fn prepare_sql(&mut self, sql: &str) -> Result<()> {
-        raw::prepare(self.stmt, &sql::remove_dash_comments(sql))
+        let sql = sql::remove_dash_comments(sql);
+        match NamedParams::parse(&sql) {
+            Some((sql, named)) => {
+                raw::prepare(self.stmt, &sql)?;
+                self.named = Some(named);
+                Ok(())
+            }
+            None => raw::prepare(self.stmt, &sql),
+        }
+    }
+
+    /// The value of each `?` given to libvsql, from the values of the
+    /// parameters (and their names, if they're named).
+    pub(crate) fn bind(
+        &self,
+        names: Option<Vec<String>>,
+        values: Vec<Value>,
+    ) -> Result<Vec<Value>> {
+        match (&self.named, names) {
+            (Some(named), names) => named.bind(names, values),
+            (None, Some(names)) => match names.first() {
+                Some(name) => Err(Error::InvalidParameterName(
+                    params::strip_colon(name).to_string(),
+                )),
+                None => Ok(values),
+            },
+            (None, None) => Ok(values),
+        }
+    }
+
+    fn bind_params<P: Params>(&self, params: P) -> Result<Vec<Value>> {
+        let names = params.names();
+        let values = params.to_values()?;
+        // Positional values are one for each parameter (a name is one
+        // parameter, however many times it's used).
+        let expected = self.parameter_count();
+        if names.is_none() && values.len() != expected {
+            return Err(Error::InvalidParameterCount(values.len(), expected));
+        }
+        self.bind(names, values)
     }
 
     fn run(&mut self, values: Vec<Value>) -> Result<()> {
-        let expected = self.parameter_count();
+        // Each `?` given to libvsql.
+        let expected = raw::num_params(self.stmt)?;
         if values.len() != expected {
             return Err(Error::InvalidParameterCount(values.len(), expected));
         }
@@ -60,17 +102,19 @@ impl<'conn> Statement<'conn> {
         raw::row_count(self.stmt)
     }
 
-    /// Executes the statement, with a `?` for each of the parameters, and
-    /// returns the number of rows that it changed.
+    /// Executes the statement, with a `?` or `:name` for each of the
+    /// parameters, and returns the number of rows that it changed.
     ///
     /// A query (a statement with columns, such as a SELECT) is
     /// [`Error::ExecuteReturnedResults`] and isn't executed, see
     /// [`query`](Statement::query).
     pub fn execute<P: Params>(&mut self, params: P) -> Result<usize> {
-        self.execute_values(params.to_values()?)
+        let values = self.bind_params(params)?;
+        self.execute_values(values)
     }
 
-    /// Executes the query, with a `?` for each of the parameters. The rows are
+    /// Executes the query, with a `?` or `:name` for each of the parameters.
+    /// The rows are
     /// an iterator, and the cursor is closed (which commits the statement,
     /// unless it's in a transaction) when they're dropped. A statement that
     /// isn't a query (such as an INSERT) is executed, and has no rows.
@@ -89,7 +133,8 @@ impl<'conn> Statement<'conn> {
     /// # }
     /// ```
     pub fn query<P: Params>(&mut self, params: P) -> Result<Rows<'_>> {
-        self.run(params.to_values()?)?;
+        let values = self.bind_params(params)?;
+        self.run(values)?;
 
         Rows::new(self.stmt)
     }
@@ -212,7 +257,8 @@ impl<'conn> Statement<'conn> {
         Ok(self.query(params)?.next().transpose()?.is_some())
     }
 
-    /// The number of parameters (`?`) of the statement.
+    /// The number of parameters of the statement: each `?`, and each name
+    /// (however many times it's used).
     ///
     /// ```
     /// # fn main() -> vsql::Result<()> {
@@ -223,6 +269,9 @@ impl<'conn> Statement<'conn> {
     /// # }
     /// ```
     pub fn parameter_count(&self) -> usize {
+        if let Some(named) = &self.named {
+            return named.len();
+        }
         raw::num_params(self.stmt).unwrap_or(0)
     }
 

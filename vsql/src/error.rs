@@ -29,6 +29,8 @@ pub enum Error {
     /// The number of parameters given (the first) isn't the number of
     /// parameters (`?`) of the statement (the second).
     InvalidParameterCount(usize, usize),
+    /// A named parameter that isn't in the statement.
+    InvalidParameterName(String),
 
     /// A Rust value couldn't be converted to an SQL value (see
     /// [`ToSql`](crate::ToSql)).
@@ -131,6 +133,7 @@ impl fmt::Display for Error {
                 f,
                 "wrong number of parameters: {given} given, {expected} expected"
             ),
+            Error::InvalidParameterName(name) => write!(f, "there's no parameter :{name}"),
             Error::ToSqlConversion(e) => e.fmt(f),
             Error::InvalidColumnIndex(index) => write!(f, "there's no column {index}"),
             Error::InvalidColumnName(name) => write!(f, "there's no column named {name}"),

@@ -45,7 +45,8 @@
 //! # Parameters
 //!
 //! Parameters are `?`, given as `()`, a tuple, an array, [`params!`] or
-//! [`params_from_iter`]. Each Rust type is sent as an SQL type (see
+//! [`params_from_iter`], or `:name`, given as [`named_params!`] (a name can be
+//! used more than once). Each Rust type is sent as an SQL type (see
 //! [`Value`]), which is cast to the type it's used as:
 //!
 //! | Rust                                  | SQL                                        |

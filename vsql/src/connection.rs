@@ -80,10 +80,11 @@ impl Connection {
         self.dbc
     }
 
-    /// Executes a statement, with a `?` for each of the parameters, and
-    /// returns the number of rows that it changed. A query (such as a SELECT)
-    /// is [`Error::ExecuteReturnedResults`] and isn't executed, see
-    /// [`query_row`](Connection::query_row) and [`prepare`](Connection::prepare).
+    /// Executes a statement, with a `?` or `:name` for each of the parameters
+    /// (see [`Params`]), and returns the number of rows that it changed. A
+    /// query (such as a SELECT) is [`Error::ExecuteReturnedResults`] and isn't
+    /// executed, see [`query_row`](Connection::query_row) and
+    /// [`prepare`](Connection::prepare).
     ///
     /// ```
     /// # fn main() -> vsql::Result<()> {
