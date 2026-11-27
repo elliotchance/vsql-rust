@@ -93,6 +93,8 @@
 //! - `rust_decimal`: `Decimal` as a parameter and a `DECIMAL`, `NUMERIC` or
 //!   `DECFLOAT` column.
 //! - `r2d2`, `deadpool`: a connection pool of a database file, see [`pool`].
+//! - `serde`: a [`Row`] can be deserialized, such as into a struct with
+//!   `#[derive(Deserialize)]` (see `from_row`).
 //!
 //! # Schema
 //!
@@ -136,6 +138,8 @@ mod version;
 mod with_chrono;
 #[cfg(feature = "rust_decimal")]
 mod with_rust_decimal;
+#[cfg(feature = "serde")]
+mod with_serde;
 #[cfg(feature = "time")]
 mod with_time;
 
@@ -149,3 +153,5 @@ pub use schema::{ForeignKey, ForeignKeyAction, PrimaryKey, Table, TableColumn, T
 pub use statement::{AndThenRows, Column, MappedRows, Row, RowIndex, Rows, Statement};
 pub use types::{Date, FromSql, Interval, IntervalFields, Time, Timestamp, ToSql, Type, Value};
 pub use version::{build_info, version, version_number, BuildInfo};
+#[cfg(feature = "serde")]
+pub use with_serde::from_row;

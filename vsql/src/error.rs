@@ -58,6 +58,10 @@ pub enum Error {
     /// `execute` was given a query (a statement that returns rows, such as a
     /// SELECT), which isn't executed. Use `query` or `query_row` instead.
     ExecuteReturnedResults,
+    /// A row couldn't be deserialized, such as a missing column (see
+    /// [`from_row`](crate::from_row), with the `serde` feature).
+    #[cfg(feature = "serde")]
+    Deserialize(String),
 }
 
 impl Error {
@@ -147,6 +151,8 @@ impl fmt::Display for Error {
             Error::ExecuteReturnedResults => {
                 f.write_str("execute was given a query, which returns rows")
             }
+            #[cfg(feature = "serde")]
+            Error::Deserialize(message) => f.write_str(message),
         }
     }
 }

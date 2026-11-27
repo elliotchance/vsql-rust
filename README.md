@@ -144,6 +144,28 @@ let pk = conn.primary_key(None, "FOO")?; // Option<PrimaryKey>
 let fks = conn.foreign_keys(None, "FOO")?; // Vec<ForeignKey>
 ```
 
+## Structs
+
+With the `serde` feature, a row can be deserialized into a struct (or a tuple
+or map). Fields are matched to columns by name, ignoring case:
+
+```toml
+vsql = { version = "1", features = ["serde"] }
+```
+
+```rust
+#[derive(serde::Deserialize)]
+struct Foo {
+    x: i64,
+    y: Option<String>,
+}
+
+let mut stmt = conn.prepare("SELECT x, y FROM foo")?;
+let foos = stmt
+    .query_map((), |row| vsql::from_row::<Foo>(row))?
+    .collect::<vsql::Result<Vec<_>>>()?;
+```
+
 ## Errors
 
 An error from vsql is `vsql::Error::Sql`, with its SQLSTATE:
