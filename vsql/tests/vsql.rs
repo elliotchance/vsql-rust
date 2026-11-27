@@ -331,6 +331,23 @@ fn column_names_and_indexes() {
 }
 
 #[test]
+fn column_names_that_only_differ_in_case() {
+    let conn = memory();
+    conn.query_row(
+        r#"SELECT * FROM (VALUES ROW(1, 2, 3)) AS t ("a", "A", "b")"#,
+        (),
+        |row| {
+            // An exact match is used before one that ignores case.
+            assert_eq!(row.get::<_, i64>("a")?, 1);
+            assert_eq!(row.get::<_, i64>("A")?, 2);
+            assert_eq!(row.get::<_, i64>("B")?, 3);
+            Ok(())
+        },
+    )
+    .unwrap();
+}
+
+#[test]
 fn parameters() {
     let conn = memory();
     conn.execute(

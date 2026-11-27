@@ -424,8 +424,9 @@ mod sealed {
     impl Sealed for &str {}
 }
 
-/// The index of a column: its index (starting at 0), or its name (ignoring
-/// ASCII case).
+/// The index of a column: its index (starting at 0), or its name. A name
+/// that's the same as a column's name is that column, otherwise it's the first
+/// column with the name ignoring ASCII case (so `"x"` is the column `X`).
 pub trait RowIndex: sealed::Sealed {
     #[doc(hidden)]
     fn index(&self, columns: &[Column]) -> Result<usize>;
@@ -445,7 +446,12 @@ impl RowIndex for &str {
     fn index(&self, columns: &[Column]) -> Result<usize> {
         columns
             .iter()
-            .position(|c| c.name.eq_ignore_ascii_case(self))
+            .position(|c| c.name == *self)
+            .or_else(|| {
+                columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(self))
+            })
             .ok_or_else(|| Error::InvalidColumnName(self.to_string()))
     }
 }
