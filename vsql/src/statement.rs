@@ -7,6 +7,7 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::params::Params;
 use crate::raw;
+use crate::sql;
 use crate::types::{FromSql, Kind, Type, Value};
 
 /// A prepared statement, see [`Connection::prepare`]. It can be executed
@@ -25,11 +26,11 @@ impl<'conn> Statement<'conn> {
     }
 
     pub(crate) fn prepare_sql(&mut self, sql: &str) -> Result<()> {
-        raw::prepare(self.stmt, sql)
+        raw::prepare(self.stmt, &sql::remove_dash_comments(sql))
     }
 
     pub(crate) fn exec_direct_sql(&mut self, sql: &str) -> Result<()> {
-        raw::exec_direct(self.stmt, sql)
+        raw::exec_direct(self.stmt, &sql::remove_dash_comments(sql))
     }
 
     /// The number of rows that the statement changed, after closing the cursor
