@@ -49,29 +49,17 @@ impl Connection {
     }
 
     fn connect(name: &str) -> Result<Connection> {
-        let env = raw::alloc_env()?;
-        let dbc = match raw::alloc_dbc(env) {
-            Ok(dbc) => dbc,
-            Err(e) => {
-                let _ = raw::free_handle(SQL_HANDLE_ENV, env);
-                return Err(e);
-            }
-        };
-        if let Err(e) = raw::connect(dbc, name) {
-            let _ = raw::free_handle(SQL_HANDLE_DBC, dbc);
-            let _ = raw::free_handle(SQL_HANDLE_ENV, env);
-            return Err(e);
-        }
-
-        // Dropped if it fails, which disconnects and frees the handles.
-        let conn = Connection {
-            env,
-            dbc,
+        // Dropped if it fails, which frees the handles (and disconnects).
+        let mut conn = Connection {
+            env: raw::alloc_env()?,
+            dbc: SQL_NULL_HANDLE,
             in_transaction: Cell::new(false),
             savepoints: RefCell::new(Vec::new()),
             _not_sync: PhantomData,
         };
-        raw::set_autocommit(dbc, true)?;
+        conn.dbc = raw::alloc_dbc(conn.env)?;
+        raw::connect(conn.dbc, name)?;
+        raw::set_autocommit(conn.dbc, true)?;
 
         Ok(conn)
     }
@@ -355,10 +343,12 @@ impl Connection {
     }
 
     fn close_handles(&mut self) -> Result<()> {
-        if self.dbc == SQL_NULL_HANDLE {
+        if self.env == SQL_NULL_HANDLE {
             return Ok(());
         }
 
+        // After connect fails, the dbc may not be connected (or allocated),
+        // and the errors are ignored when it's dropped.
         let mut result = Ok(());
         if self.in_transaction.replace(false) {
             self.savepoints.borrow_mut().clear();
@@ -368,6 +358,7 @@ impl Connection {
         result = result.and(raw::free_handle(SQL_HANDLE_DBC, self.dbc));
         result = result.and(raw::free_handle(SQL_HANDLE_ENV, self.env));
         self.dbc = SQL_NULL_HANDLE;
+        self.env = SQL_NULL_HANDLE;
 
         result
     }
@@ -631,27 +622,32 @@ impl Savepoint<'_> {
                 // A quoted name that's an upper case identifier is the same
                 // as the identifier without quotes.
                 if in_use(&sql_name) || in_use(&name) {
-                    if ends_transaction {
-                        let _ = conn.end_transaction(false);
-                    }
-                    return Err(Error::SavepointNameInUse(name));
+                    Err(Error::SavepointNameInUse(name))
+                } else {
+                    Ok(sql_name)
                 }
-                sql_name
             }
-            None => (0..)
+            None => Ok((0..)
                 .map(|n| match n {
                     0 => format!("VSQL_SP_{depth}"),
                     n => format!("VSQL_SP_{depth}_{n}"),
                 })
                 .find(|name| !in_use(name) && !in_use(&format!("\"{name}\"")))
-                .expect("a savepoint name"),
+                .expect("a savepoint name")),
         };
-        if let Err(e) = conn.execute(&format!("SAVEPOINT {name}"), ()) {
-            if ends_transaction {
-                let _ = conn.end_transaction(false);
+        let started = name.and_then(|name| {
+            conn.execute(&format!("SAVEPOINT {name}"), ())?;
+            Ok(name)
+        });
+        let name = match started {
+            Ok(name) => name,
+            Err(e) => {
+                if ends_transaction {
+                    let _ = conn.end_transaction(false);
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
+        };
         conn.savepoints.borrow_mut().push(name.clone());
 
         Ok(Savepoint {

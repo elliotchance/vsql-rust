@@ -38,19 +38,7 @@ fn load() -> Result<Version> {
     let conn = Connection::open_in_memory()?;
     let info = |info_type| raw::get_info(conn.dbc(), info_type);
 
-    // SQL_DBMS_VERSION is "01.07.0058" for 1.7.58.
-    let dbms_version = info(SQL_DBMS_VERSION)?;
-    let parts: Vec<u32> = dbms_version
-        .split('.')
-        .filter_map(|part| part.parse().ok())
-        .collect();
-    let (version, number) = match parts[..] {
-        [major, minor, patch] => (
-            format!("{major}.{minor}.{patch}"),
-            (major * 1_000_000 + minor * 1_000 + patch) as i32,
-        ),
-        _ => (dbms_version, 0),
-    };
+    let (version, number) = parse_dbms_version(info(SQL_DBMS_VERSION)?);
 
     let build = BuildInfo {
         version: info(SQL_VSQL_BUILD_VERSION)?,
@@ -68,6 +56,22 @@ fn load() -> Result<Version> {
         number,
         build,
     })
+}
+
+/// The version and its number from SQL_DBMS_VERSION, which is "01.07.0058" for
+/// 1.7.58. The number is 0 if it isn't a version.
+fn parse_dbms_version(dbms_version: String) -> (String, i32) {
+    let parts: Vec<u32> = dbms_version
+        .split('.')
+        .filter_map(|part| part.parse().ok())
+        .collect();
+    match parts[..] {
+        [major, minor, patch] => (
+            format!("{major}.{minor}.{patch}"),
+            (major * 1_000_000 + minor * 1_000 + patch) as i32,
+        ),
+        _ => (dbms_version, 0),
+    }
 }
 
 fn get() -> &'static Version {
@@ -98,4 +102,17 @@ pub fn version_number() -> i32 {
 /// ```
 pub fn build_info() -> &'static BuildInfo {
     &get().build
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dbms_versions() {
+        let version = |s: &str| parse_dbms_version(s.to_string());
+        assert_eq!(version("01.07.0058"), ("1.7.58".to_string(), 1_007_058));
+        assert_eq!(version("1.2"), ("1.2".to_string(), 0));
+        assert_eq!(version("dev"), ("dev".to_string(), 0));
+    }
 }

@@ -160,3 +160,62 @@ impl error::Error for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::types::{FromSqlError, Type};
+
+    #[test]
+    fn errors() {
+        let to_sql = Error::ToSqlConversion("too big".into());
+        let from_sql = Error::FromSqlConversion {
+            index: 1,
+            name: "X".to_string(),
+            ty: Type::Integer,
+            source: FromSqlError::OutOfRange,
+        };
+        for (err, message) in [
+            (
+                Error::SavepointNameInUse("a".to_string()),
+                "a savepoint that's still active is named \"a\"",
+            ),
+            (
+                Error::InvalidPath(PathBuf::from("a/b")),
+                "the path isn't valid UTF-8: a/b",
+            ),
+            (
+                Error::InvalidParameter {
+                    index: 2,
+                    message: "bad".to_string(),
+                },
+                "parameter 2: bad",
+            ),
+            (Error::InvalidColumnIndex(3), "there's no column 3"),
+            (
+                Error::InvalidColumnName("Y".to_string()),
+                "there's no column named Y",
+            ),
+            (Error::QueryReturnedNoRows, "the query returned no rows"),
+        ] {
+            assert_eq!(err.to_string(), message);
+            assert_eq!(err.sqlstate(), None);
+            assert!(err.diagnostics().is_none());
+            assert!(err.source().is_none());
+        }
+
+        assert_eq!(to_sql.to_string(), "too big");
+        assert_eq!(to_sql.source().unwrap().to_string(), "too big");
+        assert_eq!(
+            from_sql.to_string(),
+            "column 1 (X, INTEGER): the value is out of range"
+        );
+        assert_eq!(
+            from_sql.source().unwrap().to_string(),
+            "the value is out of range"
+        );
+    }
+}

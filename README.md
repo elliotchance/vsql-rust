@@ -213,6 +213,19 @@ that V generates doesn't compile with MSVC. Install
 Visual Studio). clang-cl is found on the `PATH` (or in
 `C:\Program Files\LLVM\bin`), or set `VSQL_CLANG_CL` to its path.
 
+## Testing
+
+```sh
+cargo test --all-features
+```
+
+CI also checks that every line of the crates runs in the tests, with
+[cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov):
+
+```sh
+cargo llvm-cov --all-features --workspace --show-missing-lines --fail-uncovered-lines 0
+```
+
 ## Updating vsql
 
 `vsql-sys/amalgamation` is the libvsql C from a vsql release
