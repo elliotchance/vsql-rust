@@ -22,6 +22,10 @@
 //! # }
 //! ```
 //!
+//! Each statement is one SQL statement. Its `--` comments are removed before
+//! it's given to vsql (which doesn't allow them), and `/* */` comments are
+//! kept.
+//!
 //! # Transactions
 //!
 //! Each statement is committed when it finishes (or when the rows of a query
@@ -100,6 +104,7 @@ mod connection;
 mod error;
 mod params;
 mod raw;
+mod sql;
 mod statement;
 pub mod types;
 mod version;

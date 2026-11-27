@@ -488,6 +488,31 @@ fn errors() {
 }
 
 #[test]
+fn comments() {
+    let conn = memory();
+    conn.execute(
+        "-- The table.
+        CREATE TABLE foo (
+            x INTEGER, -- The number.
+            /* -- not a comment in a comment */ y VARCHAR(10)
+        ) -- The end.",
+        (),
+    )
+    .unwrap();
+    conn.execute("INSERT INTO foo (x, y) VALUES (?, '--') -- one", [1])
+        .unwrap();
+    let mut stmt = conn
+        .prepare("SELECT y /* y */ FROM foo -- all\nWHERE x = ?")
+        .unwrap();
+    let y: String = stmt.query_row([1], |r| r.get(0)).unwrap();
+    assert_eq!(y, "--");
+
+    // The line of an error is the same.
+    let err = conn.execute("-- x\nSELEC 1", ()).unwrap_err();
+    assert!(err.to_string().contains("line 2"), "{err}");
+}
+
+#[test]
 fn query_returned_no_rows() {
     let conn = memory();
     conn.execute("CREATE TABLE foo (x INTEGER)", ()).unwrap();
