@@ -33,21 +33,6 @@ impl<'conn> Statement<'conn> {
         raw::prepare(self.stmt, &sql::remove_dash_comments(sql))
     }
 
-    pub(crate) fn exec_direct_sql(&mut self, sql: &str) -> Result<()> {
-        raw::exec_direct(self.stmt, &sql::remove_dash_comments(sql))
-    }
-
-    /// The number of rows that the statement changed, after closing the cursor
-    /// if it was a query.
-    pub(crate) fn finish_execute(&mut self) -> Result<usize> {
-        let n = raw::row_count(self.stmt)?;
-        if raw::num_result_cols(self.stmt)? > 0 {
-            raw::close_cursor(self.stmt)?;
-        }
-
-        Ok(n)
-    }
-
     fn run(&mut self, values: Vec<Value>) -> Result<()> {
         let mut params = values
             .iter()
@@ -59,12 +44,20 @@ impl<'conn> Statement<'conn> {
     }
 
     pub(crate) fn execute_values(&mut self, values: Vec<Value>) -> Result<usize> {
+        // A query isn't executed, since its rows would be thrown away.
+        if raw::num_result_cols(self.stmt)? > 0 {
+            return Err(Error::ExecuteReturnedResults);
+        }
         self.run(values)?;
-        self.finish_execute()
+        raw::row_count(self.stmt)
     }
 
     /// Executes the statement, with a `?` for each of the parameters, and
     /// returns the number of rows that it changed.
+    ///
+    /// A query (a statement with columns, such as a SELECT) is
+    /// [`Error::ExecuteReturnedResults`] and isn't executed, see
+    /// [`query`](Statement::query).
     pub fn execute<P: Params>(&mut self, params: P) -> Result<usize> {
         self.execute_values(params.to_values()?)
     }

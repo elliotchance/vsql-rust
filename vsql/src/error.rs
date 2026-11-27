@@ -51,6 +51,9 @@ pub enum Error {
     /// A savepoint that's still active has the name (see
     /// [`Transaction::savepoint_with_name`](crate::Transaction::savepoint_with_name)).
     SavepointNameInUse(String),
+    /// `execute` was given a query (a statement that returns rows, such as a
+    /// SELECT), which isn't executed. Use `query` or `query_row` instead.
+    ExecuteReturnedResults,
 }
 
 impl Error {
@@ -132,6 +135,9 @@ impl fmt::Display for Error {
             Error::QueryReturnedNoRows => f.write_str("the query returned no rows"),
             Error::SavepointNameInUse(name) => {
                 write!(f, "a savepoint that's still active is named {name:?}")
+            }
+            Error::ExecuteReturnedResults => {
+                f.write_str("execute was given a query, which returns rows")
             }
         }
     }

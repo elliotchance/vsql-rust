@@ -80,7 +80,9 @@ impl Connection {
     }
 
     /// Executes a statement, with a `?` for each of the parameters, and
-    /// returns the number of rows that it changed.
+    /// returns the number of rows that it changed. A query (such as a SELECT)
+    /// is [`Error::ExecuteReturnedResults`] and isn't executed, see
+    /// [`query_row`](Connection::query_row) and [`prepare`](Connection::prepare).
     ///
     /// ```
     /// # fn main() -> vsql::Result<()> {
@@ -91,15 +93,7 @@ impl Connection {
     /// # }
     /// ```
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize> {
-        let values = params.to_values()?;
-        if values.is_empty() {
-            // Without parameters, the statement doesn't need to be prepared.
-            let mut stmt = Statement::new(self)?;
-            stmt.exec_direct_sql(sql)?;
-            return stmt.finish_execute();
-        }
-
-        self.prepare(sql)?.execute_values(values)
+        self.prepare(sql)?.execute(params)
     }
 
     /// Prepares a statement, which can be executed many times.
