@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -15,6 +16,8 @@ use crate::types::{FromSql, Kind, Type, Value};
 pub struct Statement<'conn> {
     conn: &'conn Connection,
     stmt: SQLHSTMT,
+    // Described the first time they're needed.
+    columns: OnceCell<Vec<Column>>,
 }
 
 impl<'conn> Statement<'conn> {
@@ -22,6 +25,7 @@ impl<'conn> Statement<'conn> {
         Ok(Statement {
             conn,
             stmt: raw::alloc_stmt(conn.dbc())?,
+            columns: OnceCell::new(),
         })
     }
 
@@ -141,6 +145,55 @@ impl<'conn> Statement<'conn> {
         raw::num_params(self.stmt).unwrap_or(0)
     }
 
+    /// The columns of the statement's rows, which are known before it's
+    /// executed. A statement that isn't a query has no columns.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute("CREATE TABLE foo (x INTEGER NOT NULL, y VARCHAR(10))", ())?;
+    /// let stmt = conn.prepare("SELECT x, y FROM foo")?;
+    /// assert_eq!(stmt.column_count(), 2);
+    /// assert_eq!(stmt.column_names(), ["X", "Y"]);
+    /// assert_eq!(stmt.column_index("y")?, 1);
+    /// assert_eq!(stmt.columns()[1].ty(), vsql::Type::CharacterVarying);
+    /// assert!(!stmt.columns()[0].is_nullable());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn columns(&self) -> &[Column] {
+        self.columns.get_or_init(|| {
+            let n = raw::num_result_cols(self.stmt).unwrap_or(0);
+            (1..=n)
+                .map_while(|i| Column::describe(self.stmt, i).ok())
+                .collect()
+        })
+    }
+
+    /// The number of columns of the statement's rows (0 for a statement that
+    /// isn't a query).
+    pub fn column_count(&self) -> usize {
+        self.columns().len()
+    }
+
+    /// The names of the columns. Names that weren't quoted are upper case.
+    pub fn column_names(&self) -> Vec<&str> {
+        self.columns().iter().map(Column::name).collect()
+    }
+
+    /// The name of a column (starting at 0), or
+    /// [`Error::InvalidColumnIndex`].
+    pub fn column_name(&self, index: usize) -> Result<&str> {
+        let columns = self.columns();
+        Ok(columns[index.index(columns)?].name())
+    }
+
+    /// The index (starting at 0) of the column with a name (ignoring ASCII
+    /// case), or [`Error::InvalidColumnName`].
+    pub fn column_index(&self, name: &str) -> Result<usize> {
+        name.index(self.columns())
+    }
+
     /// The connection of the statement.
     pub fn connection(&self) -> &'conn Connection {
         self.conn
@@ -170,6 +223,18 @@ pub struct Column {
 }
 
 impl Column {
+    /// Describes a column (starting at 1) of a statement.
+    fn describe(stmt: SQLHSTMT, n: usize) -> Result<Column> {
+        let d = raw::describe_col(stmt, n)?;
+        Ok(Column {
+            name: d.name,
+            ty: Type::from_code(d.data_type),
+            nullable: d.nullable != SQL_NO_NULLS,
+            size: d.column_size,
+            digits: d.decimal_digits,
+        })
+    }
+
     /// The name of the column. Names that weren't quoted are upper case.
     pub fn name(&self) -> &str {
         &self.name
@@ -246,14 +311,7 @@ impl Rows<'_> {
         }
         let mut columns = Vec::with_capacity(n);
         for i in 1..=n {
-            let d = raw::describe_col(stmt, i)?;
-            columns.push(Column {
-                name: d.name,
-                ty: Type::from_code(d.data_type),
-                nullable: d.nullable != SQL_NO_NULLS,
-                size: d.column_size,
-                digits: d.decimal_digits,
-            });
+            columns.push(Column::describe(stmt, i)?);
         }
         rows.kinds = columns.iter().map(|c| Kind::of(c.ty)).collect();
         rows.columns = columns.into();
