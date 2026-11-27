@@ -14,10 +14,12 @@ categories = ["database"]
 [dependencies]
 vsql-sys = { version = "=0.0.0", path = "../vsql-sys" }
 chrono = { version = "0.4.42", optional = true, default-features = false }
+time = { version = "0.3.36", optional = true, default-features = false }
 rust_decimal = { version = "1.43", optional = true, default-features = false, features = ["std"] }
 
 [features]
 chrono = ["dep:chrono"]
+time = ["dep:time"]
 rust_decimal = ["dep:rust_decimal"]
 
 [package.metadata.docs.rs]

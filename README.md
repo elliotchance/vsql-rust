@@ -85,11 +85,11 @@ transaction with a savepoint, which is committed when the savepoint is.
 | `CHARACTER`, `VARCHAR`, `CLOB`   | `String`                                       |
 | `BINARY`, `VARBINARY`, `BLOB`    | `Vec<u8>`, `[u8; N]` (`&[u8]` as a parameter)  |
 | `BOOLEAN`                        | `bool`                                         |
-| `DATE`                           | `vsql::Date`, `chrono::NaiveDate`              |
-| `TIME`                           | `vsql::Time`, `chrono::NaiveTime`              |
-| `TIMESTAMP`                      | `vsql::Timestamp`, `chrono::NaiveDateTime`     |
-| `TIMESTAMP WITH TIME ZONE`       | `vsql::Timestamp`, `chrono::DateTime<FixedOffset>`, `chrono::DateTime<Utc>` |
-| `INTERVAL ...`                   | `vsql::Interval`                               |
+| `DATE`                           | `vsql::Date`, `chrono::NaiveDate`, `time::Date` |
+| `TIME`                           | `vsql::Time`, `chrono::NaiveTime`, `time::Time` |
+| `TIMESTAMP`                      | `vsql::Timestamp`, `chrono::NaiveDateTime`, `time::PrimitiveDateTime` |
+| `TIMESTAMP WITH TIME ZONE`       | `vsql::Timestamp`, `chrono::DateTime<FixedOffset>`, `chrono::DateTime<Utc>`, `time::OffsetDateTime` |
+| `INTERVAL ...`                   | `vsql::Interval`, `time::Duration` (day-time)  |
 
 A `DECFLOAT` is a `vsql::Value::DecFloat` (a string such as `"1.5E+20"`) as a
 parameter. A `vsql::Interval` is a number of months (`YEAR`, `MONTH` or
@@ -102,10 +102,10 @@ println!("{i}"); // INTERVAL '1 02' DAY(2) TO HOUR
 ```
 
 A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
-`chrono` and `rust_decimal` types need those features:
+`chrono`, `time` and `rust_decimal` types need those features:
 
 ```toml
-vsql = { version = "1", features = ["chrono", "rust_decimal"] }
+vsql = { version = "1", features = ["chrono", "time", "rust_decimal"] }
 ```
 
 ## Errors
