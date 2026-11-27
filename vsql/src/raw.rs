@@ -577,10 +577,12 @@ pub fn get_string(stmt: SQLHSTMT, n: usize, buf: &mut Vec<u8>) -> Result<Option<
         }
 
         // The rest of the string (ind) didn't fit, so the buffer has a null
-        // terminated piece of it, and it grows to the size of the rest.
+        // terminated piece of it, which fills the buffer (the string can have
+        // NUL characters, so the piece doesn't end at the first one), and it
+        // grows to the size of the rest.
         let ind = ind as usize;
         if rc == SQL_SUCCESS_WITH_INFO && ind >= size {
-            let piece = buf.iter().position(|&b| b == 0).unwrap_or(size);
+            let piece = size - 1;
             s.extend_from_slice(&buf[..piece]);
             buf.resize(ind - piece + 1, 0);
             continue;

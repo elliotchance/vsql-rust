@@ -506,6 +506,23 @@ fn long_strings() {
 }
 
 #[test]
+fn strings_with_nul_characters() {
+    let conn = memory();
+    for n in [5, 255, 256, 257, 1000] {
+        // A NUL character before, at and after the end of the first piece
+        // that SQLGetData reads.
+        for at in [0, n / 2, n - 1] {
+            let mut want = "a".repeat(n);
+            want.replace_range(at..at + 1, "\0");
+            let got: String = conn
+                .query_row("VALUES CAST(? AS VARCHAR(2000))", [&want], |r| r.get(0))
+                .unwrap();
+            assert_eq!(got, want, "{n} {at}");
+        }
+    }
+}
+
+#[test]
 fn errors() {
     let conn = memory();
     for (sql, want) in [
