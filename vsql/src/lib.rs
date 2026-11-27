@@ -81,6 +81,8 @@
 //!
 //! - `chrono`: `NaiveDate`, `NaiveTime`, `NaiveDateTime`, `DateTime<FixedOffset>`
 //!   and `DateTime<Utc>` as parameters and columns.
+//! - `time`: `Date`, `Time`, `PrimitiveDateTime` and `OffsetDateTime` as
+//!   parameters and columns, and `Duration` as a day-time `INTERVAL`.
 //! - `rust_decimal`: `Decimal` as a parameter and a `DECIMAL`, `NUMERIC` or
 //!   `DECFLOAT` column.
 //!
@@ -115,6 +117,8 @@ mod version;
 mod with_chrono;
 #[cfg(feature = "rust_decimal")]
 mod with_rust_decimal;
+#[cfg(feature = "time")]
+mod with_time;
 
 pub use connection::{Connection, IsolationLevel, Savepoint, Transaction, TransactionOptions};
 pub use error::{Diagnostics, Error, Result};
