@@ -50,16 +50,23 @@ struct Bound {
 impl Bound {
     fn new(column: &Column, kind: Kind) -> Option<Bound> {
         let size = usize::try_from(column.size).unwrap_or(0);
+        // A string whose length libvsql doesn't know (such as the CHARACTER
+        // VARYING of CURRENT_SCHEMA) has a size of 0, so it can't be bound.
+        let unknown = size == 0;
         let (values, width) = match kind {
             Kind::Integer => (Values::Integer(Vec::new()), 8),
             Kind::Double => (Values::Double(Vec::new()), 8),
             Kind::Real => (Values::Real(Vec::new()), 4),
             // The size of a binary string is its length in octets.
-            Kind::Binary => (Values::Binary(Vec::new()), size.max(1)),
+            Kind::Binary if unknown => return None,
+            Kind::Binary => (Values::Binary(Vec::new()), size),
             // The size of a character string is its length in octets, and
             // the string is null terminated.
             Kind::Text => match column.ty {
                 Type::Character | Type::CharacterVarying | Type::CharacterLargeObject => {
+                    if unknown {
+                        return None;
+                    }
                     (Values::Text(Vec::new()), size.saturating_add(1))
                 }
                 _ => (
@@ -245,7 +252,9 @@ mod tests {
         assert_eq!(width(Type::CharacterVarying, 40, Kind::Text), Some(41));
         assert_eq!(width(Type::Date, 10, Kind::Text), Some(139));
         assert_eq!(width(Type::Date, -1, Kind::Text), Some(129));
-        assert_eq!(width(Type::BinaryVarying, 0, Kind::Binary), Some(1));
+        assert_eq!(width(Type::BinaryVarying, 1, Kind::Binary), Some(1));
+        assert_eq!(width(Type::BinaryVarying, 0, Kind::Binary), None);
+        assert_eq!(width(Type::CharacterVarying, 0, Kind::Text), None);
         assert_eq!(
             width(Type::CharacterLargeObject, i32::MAX, Kind::Text),
             None
