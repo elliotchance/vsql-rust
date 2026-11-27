@@ -36,6 +36,11 @@
 //! [`Connection::savepoint`]) can be rolled back to without rolling back the
 //! whole transaction, and savepoints can be nested.
 //!
+//! A transaction (or savepoint) that isn't committed is rolled back when it's
+//! dropped, unless its [`DropBehavior`] is changed.
+//! [`Connection::unchecked_transaction`] starts a transaction through a
+//! `&Connection`.
+//!
 //! # Parameters
 //!
 //! Parameters are `?`, given as `()`, a tuple, an array, [`params!`] or
@@ -121,7 +126,9 @@ mod with_rust_decimal;
 #[cfg(feature = "time")]
 mod with_time;
 
-pub use connection::{Connection, IsolationLevel, Savepoint, Transaction, TransactionOptions};
+pub use connection::{
+    Connection, DropBehavior, IsolationLevel, Savepoint, Transaction, TransactionOptions,
+};
 pub use error::{Diagnostics, Error, Result};
 pub use optional::OptionalExtension;
 pub use params::{params_from_iter, Params, ParamsFromIter};
