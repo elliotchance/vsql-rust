@@ -66,6 +66,17 @@ jobs:
           fi
           grep "vsql-sys can't be built for freebsd on x86_64: the vsql amalgamation only has the C for" freebsd.txt
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --component llvm-tools-preview && rustup default stable
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Every line of the crates must run. Unit tests (in src) cover what the
+      # public API can't reach, such as libvsql errors for invalid handles.
+      - run: cargo llvm-cov --all-features --workspace --show-missing-lines --fail-uncovered-lines 0
+
   msrv:
     name: Rust 1.75 (MSRV)
     runs-on: ubuntu-latest

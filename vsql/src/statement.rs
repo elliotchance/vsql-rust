@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::params::Params;
 use crate::raw;
 use crate::sql;
-use crate::types::{FromSql, Kind, Type, Value};
+use crate::types::{FromSql, FromSqlError, Kind, Type, Value};
 
 mod rowset;
 
@@ -135,11 +135,9 @@ impl<'conn> Statement<'conn> {
         P: Params,
         F: FnOnce(&Row) -> Result<T>,
     {
-        match self.query(params)?.next() {
-            Some(Ok(row)) => f(&row),
-            Some(Err(e)) => Err(e),
-            None => Err(Error::QueryReturnedNoRows),
-        }
+        let row = self.query(params)?.next();
+
+        f(&row.unwrap_or(Err(Error::QueryReturnedNoRows))?)
     }
 
     /// Executes the query and returns `f` of its first row, or
@@ -349,6 +347,21 @@ impl Column {
         })
     }
 
+    /// The value of the column (at index) from its string.
+    pub(crate) fn parse(&self, index: usize, s: String) -> Result<Value> {
+        Value::parse(s, self.ty).map_err(|e| self.conversion_error(index, e))
+    }
+
+    /// The error for a value of the column (at index) that can't be converted.
+    fn conversion_error(&self, index: usize, source: FromSqlError) -> Error {
+        Error::FromSqlConversion {
+            index,
+            name: self.name.clone(),
+            ty: self.ty,
+            source,
+        }
+    }
+
     /// The name of the column. Names that weren't quoted are upper case.
     pub fn name(&self) -> &str {
         &self.name
@@ -531,14 +544,7 @@ impl<'stmt> Rows<'stmt> {
                 Kind::Real => raw::get_f32(self.stmt, n)?.map(|f| Value::Double(f64::from(f))),
                 Kind::Binary => raw::get_binary(self.stmt, n)?.map(Value::Binary),
                 Kind::Text => match raw::get_string(self.stmt, n, &mut self.buf)? {
-                    Some(s) => Some(Value::parse(s, column.ty).map_err(|source| {
-                        Error::FromSqlConversion {
-                            index: i,
-                            name: column.name.clone(),
-                            ty: column.ty,
-                            source,
-                        }
-                    })?),
+                    Some(s) => Some(column.parse(i, s)?),
                     None => None,
                 },
             };
@@ -645,14 +651,8 @@ impl Row {
     /// ```
     pub fn get<I: RowIndex, T: FromSql>(&self, index: I) -> Result<T> {
         let i = index.index(&self.columns)?;
-        let column = &self.columns[i];
 
-        T::from_sql(&self.values[i]).map_err(|source| Error::FromSqlConversion {
-            index: i,
-            name: column.name.clone(),
-            ty: column.ty,
-            source,
-        })
+        T::from_sql(&self.values[i]).map_err(|e| self.columns[i].conversion_error(i, e))
     }
 
     /// The value of a column (by its index, starting at 0, or its name).
@@ -715,5 +715,28 @@ impl RowIndex for &str {
                     .position(|c| c.name.eq_ignore_ascii_case(self))
             })
             .ok_or_else(|| Error::InvalidColumnName(self.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_end_after_an_error() {
+        let _conn = Connection::open_in_memory().unwrap();
+        // A statement handle that was never allocated, so fetching fails.
+        let mut rows = Rows {
+            stmt: 999_999,
+            columns: Arc::new([]),
+            kinds: Vec::new(),
+            buf: Vec::new(),
+            rowset: None,
+            open: true,
+            owner: None,
+            _stmt: PhantomData,
+        };
+        assert!(matches!(rows.next(), Some(Err(Error::Sql { .. }))));
+        assert!(rows.next().is_none());
     }
 }

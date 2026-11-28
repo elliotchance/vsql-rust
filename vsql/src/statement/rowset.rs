@@ -110,12 +110,7 @@ impl Bound {
             Values::Text(v) => {
                 let s = String::from_utf8(self.octets(v, row, length, 1)?.to_vec())
                     .map_err(|_| sql_error("22021", "a string isn't valid UTF-8"))?;
-                Value::parse(s, column.ty).map_err(|source| Error::FromSqlConversion {
-                    index,
-                    name: column.name.clone(),
-                    ty: column.ty,
-                    source,
-                })?
+                column.parse(index, s)?
             }
         })
     }

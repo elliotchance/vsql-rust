@@ -30,7 +30,8 @@ fn sql_error(sqlstate: &str, message: &str) -> Error {
 /// A string field of the first diagnostic record, which is None if it's empty
 /// (or can't be read).
 fn diag_field(handle_type: SQLSMALLINT, handle: SQLINTEGER, field: SQLSMALLINT) -> Option<String> {
-    let mut buf = vec![0u8; 129];
+    // It's longer for a longer string.
+    let mut buf = vec![0u8; 32];
     loop {
         let mut length: SQLSMALLINT = 0;
         let rc = unsafe {
@@ -124,10 +125,11 @@ fn length<T: TryFrom<usize>>(len: usize, what: &str) -> Result<T> {
 fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
-        let mut env = 0;
-        if SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &mut env) == SQL_SUCCESS {
-            SQLFreeHandle(SQL_HANDLE_ENV, env);
-        }
+        let mut env = SQL_NULL_HANDLE;
+        SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &mut env);
+        // If it wasn't allocated, env is still SQL_NULL_HANDLE, which
+        // SQLFreeHandle rejects.
+        SQLFreeHandle(SQL_HANDLE_ENV, env);
     });
 }
 
@@ -135,11 +137,8 @@ pub fn alloc_env() -> Result<SQLHENV> {
     init();
     let mut env = 0;
     let rc = unsafe { SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &mut env) };
-    if rc != SQL_SUCCESS {
-        return Err(sql_error("HY001", "can't allocate an environment"));
-    }
 
-    Ok(env)
+    check(rc, SQL_HANDLE_ENV, SQL_NULL_HANDLE).map(|()| env)
 }
 
 pub fn alloc_dbc(env: SQLHENV) -> Result<SQLHDBC> {
@@ -207,7 +206,8 @@ pub fn set_autocommit(dbc: SQLHDBC, on: bool) -> Result<()> {
 
 /// Reads a string from SQLGetInfo.
 pub fn get_info(dbc: SQLHDBC, info_type: SQLSMALLINT) -> Result<String> {
-    let mut buf = vec![0u8; 64];
+    // It's longer for a longer string.
+    let mut buf = vec![0u8; 16];
     loop {
         let mut length: SQLSMALLINT = 0;
         check(
@@ -482,9 +482,8 @@ pub fn num_params(stmt: SQLHSTMT) -> Result<usize> {
         },
         SQL_HANDLE_DESC,
         ipd,
-    )?;
-
-    Ok(usize::try_from(n).unwrap_or(0))
+    )
+    .map(|()| usize::try_from(n).unwrap_or(0))
 }
 
 pub fn num_result_cols(stmt: SQLHSTMT) -> Result<usize> {
@@ -510,7 +509,8 @@ pub struct ColumnDescription {
 /// Describes a column (starting at 1).
 pub fn describe_col(stmt: SQLHSTMT, n: usize) -> Result<ColumnDescription> {
     let number: SQLSMALLINT = length(n, "column list")?;
-    let mut name = vec![0u8; 129];
+    // It's longer for a longer name.
+    let mut name = vec![0u8; 32];
     loop {
         let mut d = ColumnDescription {
             name: String::new(),
@@ -713,10 +713,12 @@ pub fn get_string(stmt: SQLHSTMT, n: usize, buf: &mut Vec<u8>) -> Result<Option<
         }
 
         s.extend_from_slice(&buf[..ind]);
-        return String::from_utf8(s)
-            .map(Some)
-            .map_err(|_| sql_error("22021", "a string isn't valid UTF-8"));
+        return utf8(s).map(Some);
     }
+}
+
+fn utf8(s: Vec<u8>) -> Result<String> {
+    String::from_utf8(s).map_err(|_| sql_error("22021", "a string isn't valid UTF-8"))
 }
 
 /// Reads a binary string column (starting at 1) of the fetched row, it's None
@@ -754,5 +756,62 @@ pub fn get_binary(stmt: SQLHSTMT, n: usize) -> Result<Option<Vec<u8>>> {
 
         value.truncate(start + ind);
         return Ok(Some(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A handle that was never allocated.
+    const INVALID: SQLINTEGER = 999_999;
+
+    #[test]
+    fn invalid_handles() {
+        let _env = alloc_env().unwrap();
+        assert!(alloc_dbc(INVALID).is_err());
+        assert!(alloc_stmt(INVALID).is_err());
+        assert!(get_info(INVALID, SQL_DBMS_VERSION).is_err());
+        assert!(end_savepoint(INVALID, "S", true).is_err());
+        assert!(num_params(INVALID).is_err());
+        assert!(num_result_cols(INVALID).is_err());
+        assert!(describe_col(INVALID, 1).is_err());
+        assert!(get_i64(INVALID, 1).is_err());
+        let mut params = [Param {
+            value_type: SQL_CHAR,
+            parameter_type: SQL_VARCHAR,
+            column_size: 1,
+            decimal_digits: 0,
+            value: ParamValue::Null,
+        }];
+        assert!(execute(INVALID, &mut params).is_err());
+    }
+
+    #[test]
+    fn errors() {
+        let sqlstate = |e: Error| e.sqlstate().unwrap().to_string();
+        assert_eq!(
+            sqlstate(length::<SQLSMALLINT>(40_000, "x").unwrap_err()),
+            "HY090"
+        );
+        assert_eq!(
+            sqlstate(length::<SQLINTEGER>(usize::MAX, "x").unwrap_err()),
+            "HY090"
+        );
+        assert_eq!(sqlstate(utf8(vec![0xff]).unwrap_err()), "22021");
+        assert_eq!(utf8(b"a".to_vec()).unwrap(), "a");
+    }
+
+    #[test]
+    fn diagnostics_of_an_invalid_handle() {
+        let _env = alloc_env().unwrap();
+        assert!(matches!(
+            diagnostics(SQL_HANDLE_STMT, INVALID),
+            Error::Sql { sqlstate, .. } if sqlstate == "HY000"
+        ));
+        assert_eq!(
+            diag_field(SQL_HANDLE_STMT, INVALID, SQL_DIAG_TABLE_NAME),
+            None
+        );
     }
 }

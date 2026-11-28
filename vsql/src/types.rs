@@ -141,12 +141,15 @@ impl fmt::Display for Date {
 impl fmt::Display for Time {
     /// The time with microseconds, and the offset as `+HH:MM`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:02}:{:02}:{:02}.{:06}",
-            self.hour, self.minute, self.second, self.microsecond
-        )?;
-        if let Some(offset) = self.offset {
+        let Time {
+            hour,
+            minute,
+            second,
+            microsecond,
+            offset,
+        } = self;
+        write!(f, "{hour:02}:{minute:02}:{second:02}.{microsecond:06}")?;
+        if let Some(offset) = *offset {
             let sign = if offset < 0 { '-' } else { '+' };
             let offset = offset.unsigned_abs();
             write!(f, "{sign}{:02}:{:02}", offset / 60, offset % 60)?;
@@ -701,40 +704,47 @@ impl Value {
                     return Err(invalid(format!("{s:?} isn't a decimal number")));
                 }
                 let integer_digits = integer.trim_start_matches('0').len().max(1);
-                let precision = SQLINTEGER::try_from(integer_digits + fraction.len())
-                    .map_err(|_| invalid(format!("{s} has too many digits")))?;
-                let scale = SQLSMALLINT::try_from(fraction.len())
-                    .map_err(|_| invalid(format!("{s} has too many digits")))?;
-                text(SQL_NUMERIC, precision, scale, s.clone())
+                let precision = integer_digits + fraction.len();
+                // The scale (which isn't more than the precision) is a
+                // SQLSMALLINT.
+                if precision > SQLSMALLINT::MAX as usize {
+                    return Err(invalid(format!("{s} has too many digits")));
+                }
+                text(
+                    SQL_NUMERIC,
+                    precision as SQLINTEGER,
+                    fraction.len() as SQLSMALLINT,
+                    s.clone(),
+                )
             }
             // 34 is the precision of a DECFLOAT, and vsql checks the string.
             Value::DecFloat(s) => text(SQL_DECFLOAT, 34, 0, s.clone()),
             Value::Text(s) => {
                 // A CHARACTER VARYING as long as the string (which can't be 0),
                 // or a CHARACTER LARGE OBJECT if it's longer than a CHARACTER
-                // VARYING can be.
+                // VARYING can be. A string that's too long is an error when
+                // it's bound.
                 let chars = s.chars().count().max(1);
                 let ty = if chars > MAX_VARYING_LENGTH {
                     SQL_CLOB
                 } else {
                     SQL_VARCHAR
                 };
-                let chars = SQLINTEGER::try_from(chars)
-                    .map_err(|_| invalid("the string is too long".to_string()))?;
+                let chars = SQLINTEGER::try_from(chars).unwrap_or(SQLINTEGER::MAX);
                 text(ty, chars, 0, s.clone())
             }
             Value::Binary(b) => Param {
                 value_type: SQL_VARBINARY,
                 // A BINARY VARYING as long as the value (which can't be 0), or
                 // a BINARY LARGE OBJECT if it's longer than a BINARY VARYING
-                // can be.
+                // can be. A value that's too long is an error when it's
+                // bound.
                 parameter_type: if b.len() > MAX_VARYING_LENGTH {
                     SQL_BLOB
                 } else {
                     SQL_VARBINARY
                 },
-                column_size: SQLINTEGER::try_from(b.len().max(1))
-                    .map_err(|_| invalid("the binary string is too long".to_string()))?,
+                column_size: SQLINTEGER::try_from(b.len().max(1)).unwrap_or(SQLINTEGER::MAX),
                 decimal_digits: 0,
                 value: ParamValue::Binary(b.clone()),
             },
@@ -1187,6 +1197,151 @@ impl FromSql for Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_names() {
+        use IntervalFields::*;
+
+        let types = [
+            (SQL_SMALLINT, "SMALLINT"),
+            (SQL_INTEGER, "INTEGER"),
+            (SQL_BIGINT, "BIGINT"),
+            (SQL_REAL, "REAL"),
+            (SQL_DOUBLE, "DOUBLE PRECISION"),
+            (SQL_DECIMAL, "DECIMAL"),
+            (SQL_NUMERIC, "NUMERIC"),
+            (SQL_DECFLOAT, "DECFLOAT"),
+            (SQL_CHAR, "CHARACTER"),
+            (SQL_VARCHAR, "CHARACTER VARYING"),
+            (SQL_CLOB, "CHARACTER LARGE OBJECT"),
+            (SQL_BINARY, "BINARY"),
+            (SQL_VARBINARY, "BINARY VARYING"),
+            (SQL_BLOB, "BINARY LARGE OBJECT"),
+            (SQL_BOOLEAN, "BOOLEAN"),
+            (SQL_TYPE_DATE, "DATE"),
+            (SQL_TYPE_TIME, "TIME"),
+            (SQL_TYPE_TIME_WITH_TIMEZONE, "TIME WITH TIME ZONE"),
+            (SQL_TYPE_TIMESTAMP, "TIMESTAMP"),
+            (SQL_TYPE_TIMESTAMP_WITH_TIMEZONE, "TIMESTAMP WITH TIME ZONE"),
+            (SQL_INTERVAL_YEAR, "INTERVAL YEAR"),
+            (SQL_INTERVAL_DAY_TO_SECOND, "INTERVAL DAY TO SECOND"),
+            (9999, "UNKNOWN"),
+        ];
+        for (code, name) in types {
+            assert_eq!(Type::from_code(code).to_string(), name);
+        }
+        assert_eq!(Type::from_code(9999), Type::Other(9999));
+
+        for (fields, name) in [
+            (Year, "YEAR"),
+            (Month, "MONTH"),
+            (Day, "DAY"),
+            (Hour, "HOUR"),
+            (Minute, "MINUTE"),
+            (Second, "SECOND"),
+            (YearToMonth, "YEAR TO MONTH"),
+            (DayToHour, "DAY TO HOUR"),
+            (DayToMinute, "DAY TO MINUTE"),
+            (DayToSecond, "DAY TO SECOND"),
+            (HourToMinute, "HOUR TO MINUTE"),
+            (HourToSecond, "HOUR TO SECOND"),
+            (MinuteToSecond, "MINUTE TO SECOND"),
+        ] {
+            assert_eq!(fields.to_string(), name);
+        }
+    }
+
+    #[test]
+    fn times() {
+        let time = |offset| Time {
+            hour: 1,
+            minute: 2,
+            second: 3,
+            microsecond: 4,
+            offset,
+        };
+        assert_eq!(time(None).to_string(), "01:02:03.000004");
+        assert_eq!(time(Some(330)).to_string(), "01:02:03.000004+05:30");
+        assert_eq!(time(Some(-90)).to_string(), "01:02:03.000004-01:30");
+    }
+
+    #[test]
+    fn invalid_strings() {
+        use IntervalFields::*;
+
+        for (s, ty) in [
+            ("MAYBE", Type::Boolean),
+            ("DATE '22-01-02'", Type::Date),
+            ("TIME '01:02:03.1234567'", Type::Time),
+            ("INTERVAL 'x' DAY", Type::Interval(Day)),
+            ("INTERVAL '1.5' DAY", Type::Interval(Day)),
+            ("TIMESTAMP '2022-01-02'", Type::Timestamp),
+        ] {
+            let err = Value::parse(s.to_string(), ty).unwrap_err();
+            assert_eq!(err.to_string(), format!("invalid {ty}: {s:?}"));
+        }
+    }
+
+    #[test]
+    fn decimal_parameters() {
+        let param = Value::Numeric("-0.25".to_string()).to_param(0).unwrap();
+        assert_eq!((param.column_size, param.decimal_digits), (3, 2));
+        let long = format!("1.{}", "0".repeat(40_000));
+        assert!(Value::Numeric(long).to_param(0).is_err());
+        assert!(Value::Numeric("1e5".to_string()).to_param(0).is_err());
+    }
+
+    #[test]
+    fn to_sql() {
+        assert_eq!(Some(5).to_sql().unwrap(), Value::Integer(5));
+        assert_eq!(None::<i32>.to_sql().unwrap(), Value::Null);
+        let boxed: Box<str> = "a".into();
+        assert_eq!(boxed.to_sql().unwrap(), Value::Text("a".to_string()));
+    }
+
+    #[test]
+    fn from_sql_errors() {
+        fn invalid<T: FromSql + fmt::Debug>(value: Value) {
+            let err = T::from_sql(&value).unwrap_err();
+            assert!(matches!(err, FromSqlError::InvalidType), "{value:?}");
+            assert_eq!(err.to_string(), "the type can't be converted");
+            assert!(error::Error::source(&err).is_none());
+        }
+        invalid::<bool>(Value::Integer(1));
+        invalid::<f64>(Value::Boolean(true));
+        invalid::<String>(Value::Integer(1));
+        invalid::<Date>(Value::Null);
+        invalid::<Time>(Value::Null);
+        invalid::<Timestamp>(Value::Null);
+        invalid::<Vec<u8>>(Value::Null);
+        invalid::<[u8; 2]>(Value::Null);
+        invalid::<Interval>(Value::Null);
+        invalid::<i64>(Value::Null);
+
+        let date = Date {
+            year: 2022,
+            month: 1,
+            day: 2,
+        };
+        let time = Time {
+            hour: 1,
+            minute: 2,
+            second: 3,
+            microsecond: 0,
+            offset: None,
+        };
+        assert!(bool::from_sql(&Value::Boolean(true)).unwrap());
+        assert_eq!(Date::from_sql(&Value::Date(date)).unwrap(), date);
+        assert_eq!(Time::from_sql(&Value::Time(time)).unwrap(), time);
+        assert_eq!(f64::from_sql(&Value::Integer(2)).unwrap(), 2.0);
+        assert_eq!(f32::from_sql(&Value::Double(2.5)).unwrap(), 2.5);
+        let err = f64::from_sql(&Value::Numeric("x".to_string())).unwrap_err();
+        assert!(error::Error::source(&err).is_some());
+        assert_eq!(
+            FromSqlError::OutOfRange.to_string(),
+            "the value is out of range"
+        );
+    }
 
     #[test]
     fn integer_digits_of_decimals() {
