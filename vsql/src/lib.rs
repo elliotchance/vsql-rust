@@ -65,6 +65,10 @@
 //!
 //! A `DECFLOAT` is a [`Value::DecFloat`].
 //!
+//! A large `CLOB` or `BLOB` can be written from an `impl Read` with
+//! [`ReadParam`], and read as an `impl Read` with
+//! [`Statement::query_streaming`] and [`StreamingRow::reader`].
+//!
 //! # Columns
 //!
 //! | SQL                              | Rust                                 |
@@ -126,6 +130,7 @@ mod params;
 #[cfg(any(feature = "r2d2", feature = "deadpool"))]
 pub mod pool;
 mod raw;
+mod read_param;
 mod schema;
 mod sql;
 mod statement;
@@ -145,7 +150,11 @@ pub use connection::{
 pub use error::{Diagnostics, Error, Result};
 pub use optional::OptionalExtension;
 pub use params::{params_from_iter, Params, ParamsFromIter};
+pub use read_param::ReadParam;
 pub use schema::{ForeignKey, ForeignKeyAction, PrimaryKey, Table, TableColumn, TableType};
-pub use statement::{AndThenRows, Column, MappedRows, Row, RowIndex, Rows, Statement};
+pub use statement::{
+    AndThenRows, Column, ColumnReader, MappedRows, Row, RowIndex, Rows, Statement, StreamingRow,
+    StreamingRows,
+};
 pub use types::{Date, FromSql, Interval, IntervalFields, Time, Timestamp, ToSql, Type, Value};
 pub use version::{build_info, version, version_number, BuildInfo};

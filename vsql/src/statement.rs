@@ -6,14 +6,17 @@ use vsql_sys::*;
 
 use crate::connection::Connection;
 use crate::error::{Error, Result};
-use crate::params::Params;
+use crate::params::{Arg, Params};
 use crate::raw;
+use crate::read_param;
 use crate::sql;
-use crate::types::{FromSql, Kind, Type, Value};
+use crate::types::{self, FromSql, Kind, Type, Value};
 
 mod rowset;
+mod streaming;
 
 use rowset::Rowset;
+pub use streaming::{ColumnReader, StreamingRow, StreamingRows};
 
 /// A prepared statement, see [`Connection::prepare`]. It can be executed
 /// many times, with different parameters.
@@ -37,27 +40,31 @@ impl<'conn> Statement<'conn> {
         raw::prepare(self.stmt, &sql::remove_dash_comments(sql))
     }
 
-    fn run(&mut self, values: Vec<Value>) -> Result<()> {
+    fn run<P: Params>(&mut self, params: P) -> Result<()> {
         let expected = self.parameter_count();
-        if values.len() != expected {
-            return Err(Error::InvalidParameterCount(values.len(), expected));
-        }
-        let mut params = values
-            .iter()
-            .enumerate()
-            .map(|(i, v)| v.to_param(i + 1))
-            .collect::<Result<Vec<_>>>()?;
+        let stmt = self.stmt;
+        params.with_args(|args| {
+            if args.len() != expected {
+                return Err(Error::InvalidParameterCount(args.len(), expected));
+            }
+            // A parameter that's read from a reader is given in pieces when
+            // the statement executes, with its index in streams.
+            let mut streams = Vec::new();
+            let mut params = Vec::with_capacity(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                params.push(match arg {
+                    Arg::Value(v) => v.to_param(i + 1)?,
+                    Arg::Stream { binary, reader } => {
+                        streams.push(*reader);
+                        types::stream_param(*binary, streams.len() - 1)
+                    }
+                });
+            }
 
-        raw::execute(self.stmt, &mut params)
-    }
-
-    pub(crate) fn execute_values(&mut self, values: Vec<Value>) -> Result<usize> {
-        // A query isn't executed, since its rows would be thrown away.
-        if raw::num_result_cols(self.stmt)? > 0 {
-            return Err(Error::ExecuteReturnedResults);
-        }
-        self.run(values)?;
-        raw::row_count(self.stmt)
+            raw::execute(stmt, &mut params, &mut |number, data| {
+                read_param::send(streams[number], &mut |piece| data.put(piece))
+            })
+        })
     }
 
     /// Executes the statement, with a `?` for each of the parameters, and
@@ -67,7 +74,12 @@ impl<'conn> Statement<'conn> {
     /// [`Error::ExecuteReturnedResults`] and isn't executed, see
     /// [`query`](Statement::query).
     pub fn execute<P: Params>(&mut self, params: P) -> Result<usize> {
-        self.execute_values(params.to_values()?)
+        // A query isn't executed, since its rows would be thrown away.
+        if raw::num_result_cols(self.stmt)? > 0 {
+            return Err(Error::ExecuteReturnedResults);
+        }
+        self.run(params)?;
+        raw::row_count(self.stmt)
     }
 
     /// Executes the query, with a `?` for each of the parameters. The rows are
@@ -89,15 +101,51 @@ impl<'conn> Statement<'conn> {
     /// # }
     /// ```
     pub fn query<P: Params>(&mut self, params: P) -> Result<Rows<'_>> {
-        self.run(params.to_values()?)?;
+        self.run(params)?;
 
         Rows::new(self.stmt)
+    }
+
+    /// Executes the query, like [`query`](Statement::query), but nothing is
+    /// read until it's asked for: each column of the current row is read when
+    /// it's got (see [`StreamingRow::get`]), and a large value can be read in
+    /// pieces as an `impl Read` (see [`StreamingRow::reader`]), so it's never
+    /// all in memory in Rust.
+    ///
+    /// The rows are fetched one at a time, which is slower than
+    /// [`query`](Statement::query) for many small rows.
+    ///
+    /// ```
+    /// use std::io::Read;
+    ///
+    /// # fn main() -> vsql::Result<()> {
+    /// let conn = vsql::Connection::open_in_memory()?;
+    /// conn.execute("CREATE TABLE files (name VARCHAR(100), body BLOB)", ())?;
+    /// conn.execute("INSERT INTO files (name, body) VALUES ('a.txt', X'616263')", ())?;
+    ///
+    /// let mut stmt = conn.prepare("SELECT name, body FROM files")?;
+    /// let mut rows = stmt.query_streaming(())?;
+    /// while let Some(mut row) = rows.next()? {
+    ///     let name: String = row.get(0)?;
+    ///     let mut body = Vec::new();
+    ///     if let Some(mut reader) = row.reader(1)? {
+    ///         reader.read_to_end(&mut body).unwrap();
+    ///     }
+    ///     assert_eq!((name.as_str(), body.as_slice()), ("a.txt", &b"abc"[..]));
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query_streaming<P: Params>(&mut self, params: P) -> Result<StreamingRows<'_>> {
+        self.run(params)?;
+
+        StreamingRows::new(self.stmt)
     }
 
     /// The same as [`query`](Statement::query), but the rows own the
     /// statement, so they can be returned from a function.
     pub(crate) fn into_rows<P: Params>(mut self, params: P) -> Result<Rows<'conn>> {
-        self.run(params.to_values()?)?;
+        self.run(params)?;
 
         let mut rows = Rows::new(self.stmt)?;
         rows.owner = Some(self);
@@ -311,7 +359,7 @@ impl Statement<'_> {
     /// [`Connection::execute_batch`]. The rows of a query are thrown away.
     pub(crate) fn execute_ignoring_rows(&mut self, sql: &str) -> Result<()> {
         self.prepare_sql(sql)?;
-        self.run(Vec::new())?;
+        self.run(())?;
         if raw::num_result_cols(self.stmt)? > 0 {
             raw::close_cursor(self.stmt)?;
         }
@@ -524,25 +572,7 @@ impl<'stmt> Rows<'stmt> {
 
         let mut values = Vec::with_capacity(self.columns.len());
         for (i, (column, kind)) in self.columns.iter().zip(&self.kinds).enumerate() {
-            let n = i + 1;
-            let value = match kind {
-                Kind::Integer => raw::get_i64(self.stmt, n)?.map(Value::Integer),
-                Kind::Double => raw::get_f64(self.stmt, n)?.map(Value::Double),
-                Kind::Real => raw::get_f32(self.stmt, n)?.map(|f| Value::Double(f64::from(f))),
-                Kind::Binary => raw::get_binary(self.stmt, n)?.map(Value::Binary),
-                Kind::Text => match raw::get_string(self.stmt, n, &mut self.buf)? {
-                    Some(s) => Some(Value::parse(s, column.ty).map_err(|source| {
-                        Error::FromSqlConversion {
-                            index: i,
-                            name: column.name.clone(),
-                            ty: column.ty,
-                            source,
-                        }
-                    })?),
-                    None => None,
-                },
-            };
-            values.push(value.unwrap_or(Value::Null));
+            values.push(read_value(self.stmt, i, column, *kind, &mut self.buf)?);
         }
 
         Ok(Some(Row {
@@ -550,6 +580,38 @@ impl<'stmt> Rows<'stmt> {
             columns: Arc::clone(&self.columns),
         }))
     }
+}
+
+/// Reads a column (starting at 0) of the fetched row with SQLGetData.
+fn read_value(
+    stmt: SQLHSTMT,
+    i: usize,
+    column: &Column,
+    kind: Kind,
+    buf: &mut Vec<u8>,
+) -> Result<Value> {
+    let n = i + 1;
+    let value = match kind {
+        Kind::Integer => raw::get_i64(stmt, n)?.map(Value::Integer),
+        Kind::Double => raw::get_f64(stmt, n)?.map(Value::Double),
+        Kind::Real => raw::get_f32(stmt, n)?.map(|f| Value::Double(f64::from(f))),
+        Kind::Binary => raw::get_binary(stmt, n)?.map(Value::Binary),
+        Kind::Text => match raw::get_string(stmt, n, buf)? {
+            Some(s) => {
+                Some(
+                    Value::parse(s, column.ty).map_err(|source| Error::FromSqlConversion {
+                        index: i,
+                        name: column.name.clone(),
+                        ty: column.ty,
+                        source,
+                    })?,
+                )
+            }
+            None => None,
+        },
+    };
+
+    Ok(value.unwrap_or(Value::Null))
 }
 
 impl std::fmt::Debug for Rows<'_> {

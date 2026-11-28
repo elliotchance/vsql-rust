@@ -375,14 +375,40 @@ pub enum ParamValue {
     Double(SQLDOUBLE),
     Text(String),
     Binary(Vec<u8>),
+    /// The value is given in pieces (SQL_DATA_AT_EXEC) when the statement
+    /// executes, see [`execute`]. The number is passed back to `put_data`.
+    AtExec(usize),
+}
+
+/// Gives the pieces of an SQL_DATA_AT_EXEC parameter, see [`execute`].
+pub struct PutData(SQLHSTMT);
+
+impl PutData {
+    /// Gives the next piece of the parameter's value (which may be empty).
+    pub fn put(&mut self, data: &[u8]) -> Result<()> {
+        let len: SQLINTEGER = length(data.len(), "piece")?;
+        // An empty piece only needs a pointer.
+        let data = if data.is_empty() { b"\0" } else { data };
+        check(
+            unsafe { SQLPutData(self.0, data.as_ptr() as SQLPOINTER, len) },
+            SQL_HANDLE_STMT,
+            self.0,
+        )
+    }
 }
 
 /// Executes the prepared statement with the parameters, which are bound for
 /// this execution only: they're borrowed until SQLExecute returns, and then
-/// unbound so that libvsql never reads them again.
-pub fn execute(stmt: SQLHSTMT, params: &mut [Param]) -> Result<()> {
+/// unbound so that libvsql never reads them again. The value of an
+/// [`ParamValue::AtExec`] parameter is given by `put_data`, with its number,
+/// in pieces (each SQLPutData call) when the statement executes.
+pub fn execute(
+    stmt: SQLHSTMT,
+    params: &mut [Param],
+    put_data: &mut dyn FnMut(usize, &mut PutData) -> Result<()>,
+) -> Result<()> {
     let mut inds: Vec<SQLINTEGER> = vec![0; params.len()];
-    let result = bind_and_execute(stmt, params, &mut inds);
+    let result = bind_and_execute(stmt, params, &mut inds, put_data);
     if !params.is_empty() {
         unsafe { SQLFreeStmt(stmt, SQL_RESET_PARAMS) };
     }
@@ -390,7 +416,12 @@ pub fn execute(stmt: SQLHSTMT, params: &mut [Param]) -> Result<()> {
     result
 }
 
-fn bind_and_execute(stmt: SQLHSTMT, params: &mut [Param], inds: &mut [SQLINTEGER]) -> Result<()> {
+fn bind_and_execute(
+    stmt: SQLHSTMT,
+    params: &mut [Param],
+    inds: &mut [SQLINTEGER],
+    put_data: &mut dyn FnMut(usize, &mut PutData) -> Result<()>,
+) -> Result<()> {
     for (i, (param, ind)) in params.iter_mut().zip(inds.iter_mut()).enumerate() {
         let number: SQLSMALLINT = length(i + 1, "parameter list")?;
         let (pointer, buffer_length): (SQLPOINTER, SQLINTEGER) = match &mut param.value {
@@ -420,6 +451,11 @@ fn bind_and_execute(stmt: SQLHSTMT, params: &mut [Param], inds: &mut [SQLINTEGER
                 *ind = length(b.len(), "parameter")?;
                 (b.as_mut_ptr() as SQLPOINTER, *ind)
             }
+            // The pointer is given back by SQLParamData.
+            ParamValue::AtExec(number) => {
+                *ind = SQL_DATA_AT_EXEC;
+                (*number as SQLPOINTER, 0)
+            }
         };
         check(
             unsafe {
@@ -441,7 +477,26 @@ fn bind_and_execute(stmt: SQLHSTMT, params: &mut [Param], inds: &mut [SQLINTEGER
         )?;
     }
 
-    check(unsafe { SQLExecute(stmt) }, SQL_HANDLE_STMT, stmt)
+    let rc = unsafe { SQLExecute(stmt) };
+    if rc != SQL_NEED_DATA {
+        return check(rc, SQL_HANDLE_STMT, stmt);
+    }
+
+    // SQLParamData asks for each SQL_DATA_AT_EXEC parameter, and executes the
+    // statement after the last one.
+    loop {
+        let mut number: SQLPOINTER = ptr::null_mut();
+        let rc = unsafe { SQLParamData(stmt, &mut number) };
+        if rc != SQL_NEED_DATA {
+            return check(rc, SQL_HANDLE_STMT, stmt);
+        }
+        // The statement waits for its parameters (and every other routine
+        // fails) until it's cancelled.
+        if let Err(e) = put_data(number as usize, &mut PutData(stmt)) {
+            unsafe { SQLCancel(stmt) };
+            return Err(e);
+        }
+    }
 }
 
 pub fn row_count(stmt: SQLHSTMT) -> Result<usize> {
@@ -755,4 +810,48 @@ pub fn get_binary(stmt: SQLHSTMT, n: usize) -> Result<Option<Vec<u8>>> {
         value.truncate(start + ind);
         return Ok(Some(value));
     }
+}
+
+/// Reads the next piece of a column (starting at 1) of the fetched row, as
+/// SQL_CHAR (a null terminated piece) or SQL_VARBINARY, into `buf`. It's None
+/// for a NULL, otherwise the number of octets read and whether that was the
+/// last piece. After the last piece, the column is read from the start again
+/// (and so is a column after a different column is read).
+pub fn get_piece(
+    stmt: SQLHSTMT,
+    n: usize,
+    target_type: SQLSMALLINT,
+    buf: &mut [u8],
+) -> Result<Option<(usize, bool)>> {
+    let n: SQLSMALLINT = length(n, "column list")?;
+    let size = buf.len().min(SQLINTEGER::MAX as usize);
+    let mut ind: SQLINTEGER = 0;
+    let rc = unsafe {
+        SQLGetData(
+            stmt,
+            n,
+            target_type,
+            buf.as_mut_ptr() as SQLPOINTER,
+            size as SQLINTEGER,
+            &mut ind,
+        )
+    };
+    check(rc, SQL_HANDLE_STMT, stmt)?;
+    if ind == SQL_NULL_DATA {
+        return Ok(None);
+    }
+
+    // The rest of the value (ind) didn't fit, so the buffer is full, without
+    // the null terminator of a string.
+    let ind = ind as usize;
+    if rc == SQL_SUCCESS_WITH_INFO && ind >= size {
+        let piece = if target_type == SQL_CHAR {
+            size - 1
+        } else {
+            size
+        };
+        return Ok(Some((piece, false)));
+    }
+
+    Ok(Some((ind, true)))
 }

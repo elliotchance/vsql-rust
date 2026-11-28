@@ -128,6 +128,26 @@ A `NULL` is an `Option`, and any value can be read as a `vsql::Value`. The
 vsql = { version = "1", features = ["chrono", "time", "rust_decimal"] }
 ```
 
+### Large objects
+
+A large `CLOB` or `BLOB` can be written from an `impl Read` (such as a file)
+and read as an `impl Read`, in pieces, so it's never all in memory in Rust
+(vsql itself still holds the whole value):
+
+```rust
+let file = std::fs::File::open("photo.jpg")?;
+conn.execute("INSERT INTO photos (id, data) VALUES (?, ?)", vsql::params![1, vsql::ReadParam::binary(file)])?;
+
+let mut stmt = conn.prepare("SELECT id, data FROM photos")?;
+let mut rows = stmt.query_streaming(())?;
+while let Some(mut row) = rows.next()? {
+    let id: i64 = row.get(0)?;
+    if let Some(mut data) = row.reader(1)? {
+        std::io::copy(&mut data, &mut std::fs::File::create(format!("{id}.jpg"))?)?;
+    }
+}
+```
+
 ## Schema
 
 The tables, columns and keys of a schema (`None` is the current schema), with
