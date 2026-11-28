@@ -1,5 +1,19 @@
+use std::cell::RefCell;
+use std::io::Read;
+
 use crate::error::Result;
 use crate::types::{ToSql, Value};
+
+/// A parameter as it's sent: a value, or a value that's read in pieces when
+/// the statement executes (see [`ReadParam`](crate::ReadParam)).
+#[doc(hidden)]
+pub enum Arg<'a> {
+    Value(Value),
+    Stream {
+        binary: bool,
+        reader: &'a RefCell<dyn Read + 'a>,
+    },
+}
 
 /// The parameters of a statement, one for each `?`.
 ///
@@ -7,37 +21,60 @@ use crate::types::{ToSql, Value};
 /// slice of one type, a slice of [`&dyn ToSql`](ToSql) (see
 /// [`params!`](crate::params!)), or an iterator (see [`params_from_iter`]).
 pub trait Params {
+    /// Calls `f` with the parameters, which may borrow from them.
     #[doc(hidden)]
-    fn to_values(self) -> Result<Vec<Value>>;
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>;
+}
+
+/// The parameters of a slice.
+fn args<T: ToSql>(values: &[T]) -> Result<Vec<Arg<'_>>> {
+    values.iter().map(ToSql::to_arg).collect()
 }
 
 impl Params for () {
-    fn to_values(self) -> Result<Vec<Value>> {
-        Ok(Vec::new())
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+    {
+        f(Vec::new())
     }
 }
 
-impl<T: ToSql> Params for &[T] {
-    fn to_values(self) -> Result<Vec<Value>> {
-        self.iter().map(ToSql::to_sql).collect()
+impl<P: ToSql> Params for &[P] {
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+    {
+        f(args(self)?)
     }
 }
 
-impl<T: ToSql, const N: usize> Params for [T; N] {
-    fn to_values(self) -> Result<Vec<Value>> {
-        self.iter().map(ToSql::to_sql).collect()
+impl<P: ToSql, const N: usize> Params for [P; N] {
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+    {
+        f(args(&self)?)
     }
 }
 
-impl<T: ToSql, const N: usize> Params for &[T; N] {
-    fn to_values(self) -> Result<Vec<Value>> {
-        self.iter().map(ToSql::to_sql).collect()
+impl<P: ToSql, const N: usize> Params for &[P; N] {
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+    {
+        f(args(self)?)
     }
 }
 
-impl<T: ToSql> Params for &Vec<T> {
-    fn to_values(self) -> Result<Vec<Value>> {
-        self.iter().map(ToSql::to_sql).collect()
+impl<P: ToSql> Params for &Vec<P> {
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+    {
+        f(args(self)?)
     }
 }
 
@@ -45,9 +82,12 @@ macro_rules! params_tuple {
     ($($name:ident),+) => {
         impl<$($name: ToSql),+> Params for ($($name,)+) {
             #[allow(non_snake_case)]
-            fn to_values(self) -> Result<Vec<Value>> {
-                let ($($name,)+) = self;
-                Ok(vec![$($name.to_sql()?),+])
+            fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+            where
+                Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+            {
+                let ($($name,)+) = &self;
+                f(vec![$($name.to_arg()?),+])
             }
         }
     };
@@ -74,8 +114,12 @@ where
     I: IntoIterator,
     I::Item: ToSql,
 {
-    fn to_values(self) -> Result<Vec<Value>> {
-        self.0.into_iter().map(|v| v.to_sql()).collect()
+    fn with_args<Out, Call>(self, f: Call) -> Result<Out>
+    where
+        Call: FnOnce(Vec<Arg<'_>>) -> Result<Out>,
+    {
+        let values: Vec<I::Item> = self.0.into_iter().collect();
+        f(args(&values)?)
     }
 }
 

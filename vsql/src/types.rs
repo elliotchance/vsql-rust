@@ -8,6 +8,7 @@ use std::time::Duration;
 use vsql_sys::*;
 
 use crate::error::{Error, Result};
+use crate::params::Arg;
 use crate::raw::{Param, ParamValue};
 
 /// An SQL type, from a column's description.
@@ -769,14 +770,44 @@ impl Value {
     }
 }
 
+/// The parameter for a value that's given in pieces (see
+/// [`ReadParam`](crate::ReadParam)) as a CHARACTER LARGE OBJECT or BINARY
+/// LARGE OBJECT. Its length isn't known, so it's the longest that a large
+/// object can be (vsql stores only the octets that are given).
+pub(crate) fn stream_param(binary: bool, number: usize) -> Param {
+    let (value_type, parameter_type) = if binary {
+        (SQL_VARBINARY, SQL_BLOB)
+    } else {
+        (SQL_CHAR, SQL_CLOB)
+    };
+    Param {
+        value_type,
+        parameter_type,
+        column_size: SQLINTEGER::MAX,
+        decimal_digits: 0,
+        value: ParamValue::AtExec(number),
+    }
+}
+
 /// A type that can be a parameter.
 pub trait ToSql {
     fn to_sql(&self) -> Result<Value>;
+
+    /// The parameter as it's sent, which is its value, unless it's read when
+    /// the statement executes (see [`ReadParam`](crate::ReadParam)).
+    #[doc(hidden)]
+    fn to_arg(&self) -> Result<Arg<'_>> {
+        self.to_sql().map(Arg::Value)
+    }
 }
 
 impl<T: ToSql + ?Sized> ToSql for &T {
     fn to_sql(&self) -> Result<Value> {
         (**self).to_sql()
+    }
+
+    fn to_arg(&self) -> Result<Arg<'_>> {
+        (**self).to_arg()
     }
 }
 
@@ -787,11 +818,22 @@ impl<T: ToSql> ToSql for Option<T> {
             None => Ok(Value::Null),
         }
     }
+
+    fn to_arg(&self) -> Result<Arg<'_>> {
+        match self {
+            Some(v) => v.to_arg(),
+            None => Ok(Arg::Value(Value::Null)),
+        }
+    }
 }
 
 impl<T: ToSql + ?Sized> ToSql for Box<T> {
     fn to_sql(&self) -> Result<Value> {
         (**self).to_sql()
+    }
+
+    fn to_arg(&self) -> Result<Arg<'_>> {
+        (**self).to_arg()
     }
 }
 
