@@ -205,6 +205,36 @@ pub fn set_autocommit(dbc: SQLHDBC, on: bool) -> Result<()> {
     )
 }
 
+/// Sets an SQLINTEGER connection attribute (which libvsql reads before
+/// SQLSetConnectAttr returns).
+pub fn set_connect_attr(dbc: SQLHDBC, attribute: SQLINTEGER, value: SQLINTEGER) -> Result<()> {
+    check(
+        unsafe { SQLSetConnectAttr(dbc, attribute, &value as *const SQLINTEGER as SQLPOINTER, 0) },
+        SQL_HANDLE_DBC,
+        dbc,
+    )
+}
+
+/// Reads an SQLINTEGER connection attribute.
+pub fn get_connect_attr(dbc: SQLHDBC, attribute: SQLINTEGER) -> Result<SQLINTEGER> {
+    let mut value: SQLINTEGER = 0;
+    check(
+        unsafe {
+            SQLGetConnectAttr(
+                dbc,
+                attribute,
+                &mut value as *mut SQLINTEGER as SQLPOINTER,
+                0,
+                ptr::null_mut(),
+            )
+        },
+        SQL_HANDLE_DBC,
+        dbc,
+    )?;
+
+    Ok(value)
+}
+
 /// Reads a string from SQLGetInfo.
 pub fn get_info(dbc: SQLHDBC, info_type: SQLSMALLINT) -> Result<String> {
     let mut buf = vec![0u8; 64];

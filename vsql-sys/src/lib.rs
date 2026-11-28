@@ -333,6 +333,21 @@ pub const SQL_ATTR_SAVEPOINT_NAME: SQLINTEGER = 10027;
 /// See SQLSetConnectAttr.
 pub const SQL_ATTR_AUTOCOMMIT: SQLINTEGER = 102;
 
+// Connection attributes for vsql's connection options, see SQLSetConnectAttr.
+// Each is an SQLINTEGER.
+/// Milliseconds, 5000.
+pub const SQL_ATTR_VSQL_LOCK_TIMEOUT: SQLINTEGER = 11100;
+/// Milliseconds, 60000.
+pub const SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT: SQLINTEGER = 11101;
+/// SQL_TRANSACTION_SERIALIZABLE.
+pub const SQL_ATTR_VSQL_ISOLATION_LEVEL: SQLINTEGER = 11102;
+/// Pages, 2000.
+pub const SQL_ATTR_VSQL_CACHE_SIZE: SQLINTEGER = 11103;
+/// Octets, 4096.
+pub const SQL_ATTR_VSQL_PAGE_SIZE: SQLINTEGER = 11104;
+/// SQL_FALSE.
+pub const SQL_ATTR_VSQL_FULL_FSYNC: SQLINTEGER = 11105;
+
 // SQL_ATTR_AUTOCOMMIT values.
 /// The default.
 pub const SQL_AUTOCOMMIT_OFF: SQLINTEGER = 0;

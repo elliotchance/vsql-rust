@@ -84,6 +84,28 @@ ignores. `conn.unchecked_transaction()` starts a transaction through a
 `&Connection` (such as one in an `Rc`), which is an error if the connection is
 already in a transaction.
 
+## Timeouts
+
+A statement waits up to 5 seconds for another connection's `SERIALIZABLE`
+transaction to finish before it fails with a serialization failure (SQLSTATE
+`40001`), and `CREATE INDEX` waits up to 60 seconds for the transactions that
+changed the table. vsql only reads these when it connects, so they're set by
+opening the connection with `ConnectionOptions`:
+
+```rust
+use std::time::Duration;
+use vsql::{Connection, ConnectionOptions};
+
+let options = ConnectionOptions::default()
+    .busy_timeout(Duration::from_millis(100))
+    .create_index_timeout(Duration::from_secs(10));
+let conn = Connection::open_with_options("my.vsql", options)?;
+assert_eq!(conn.busy_timeout()?, Duration::from_millis(100));
+```
+
+A pool's connections are opened with
+`VsqlConnectionManager::file("my.vsql").with_options(options)`.
+
 ## Types
 
 | SQL                              | Rust                                           |

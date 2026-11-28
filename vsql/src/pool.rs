@@ -34,7 +34,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{Connection, Error, Result};
+use crate::{Connection, ConnectionOptions, Error, Result};
 
 #[cfg(feature = "deadpool")]
 pub use deadpool;
@@ -50,6 +50,7 @@ pub use r2d2;
 #[derive(Debug, Clone)]
 pub struct VsqlConnectionManager {
     path: PathBuf,
+    options: ConnectionOptions,
 }
 
 impl VsqlConnectionManager {
@@ -58,7 +59,15 @@ impl VsqlConnectionManager {
     pub fn file<P: AsRef<Path>>(path: P) -> VsqlConnectionManager {
         VsqlConnectionManager {
             path: path.as_ref().to_path_buf(),
+            options: ConnectionOptions::default(),
         }
+    }
+
+    /// Opens the connections with [`ConnectionOptions`], such as a
+    /// [`busy_timeout`](ConnectionOptions::busy_timeout).
+    pub fn with_options(mut self, options: ConnectionOptions) -> VsqlConnectionManager {
+        self.options = options;
+        self
     }
 
     /// The path of the database file.
@@ -67,7 +76,7 @@ impl VsqlConnectionManager {
     }
 
     fn connect(&self) -> Result<Connection> {
-        Connection::open(&self.path)
+        Connection::open_with_options(&self.path, self.options)
     }
 
     fn check(conn: &Connection) -> Result<()> {

@@ -42,6 +42,12 @@
 //! [`Connection::unchecked_transaction`] starts a transaction through a
 //! `&Connection`.
 //!
+//! A statement waits for another connection's SERIALIZABLE transaction to
+//! finish (5 seconds by default) before it fails with SQLSTATE `40001`. The
+//! connection is opened with a different
+//! [`busy_timeout`](ConnectionOptions::busy_timeout) by
+//! [`Connection::open_with_options`].
+//!
 //! # Parameters
 //!
 //! Parameters are `?`, given as `()`, a tuple, an array, [`params!`] or
@@ -140,7 +146,8 @@ mod with_rust_decimal;
 mod with_time;
 
 pub use connection::{
-    Connection, DropBehavior, IsolationLevel, Savepoint, Transaction, TransactionOptions,
+    Connection, ConnectionOptions, DropBehavior, IsolationLevel, Savepoint, Transaction,
+    TransactionOptions,
 };
 pub use error::{Diagnostics, Error, Result};
 pub use optional::OptionalExtension;

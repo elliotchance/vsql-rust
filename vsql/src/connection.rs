@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::Path;
+use std::time::Duration;
 
 use vsql_sys::*;
 
@@ -34,21 +35,52 @@ pub struct Connection {
 impl Connection {
     /// Opens a database file, which is created if it doesn't exist.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Connection> {
+        Connection::open_with_options(path, ConnectionOptions::default())
+    }
+
+    /// Opens a database file (which is created if it doesn't exist) with
+    /// [`ConnectionOptions`], such as how long to wait for another
+    /// connection's transaction.
+    ///
+    /// ```
+    /// # fn main() -> vsql::Result<()> {
+    /// # let path = std::env::temp_dir().join(format!("vsql-options-doc-{}.vsql", std::process::id()));
+    /// use std::time::Duration;
+    /// use vsql::{Connection, ConnectionOptions};
+    ///
+    /// let options = ConnectionOptions::default().busy_timeout(Duration::from_millis(100));
+    /// let conn = Connection::open_with_options(&path, options)?;
+    /// assert_eq!(conn.busy_timeout()?, Duration::from_millis(100));
+    /// # drop(conn);
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open_with_options<P: AsRef<Path>>(
+        path: P,
+        options: ConnectionOptions,
+    ) -> Result<Connection> {
         let path = path.as_ref();
         let name = path
             .to_str()
             .ok_or_else(|| Error::InvalidPath(path.to_path_buf()))?;
 
-        Connection::connect(name)
+        Connection::connect(name, options)
     }
 
     /// Opens a database that only exists for the life of the connection. Each
     /// connection to memory is a different database.
     pub fn open_in_memory() -> Result<Connection> {
-        Connection::connect(":memory:")
+        Connection::open_in_memory_with_options(ConnectionOptions::default())
     }
 
-    fn connect(name: &str) -> Result<Connection> {
+    /// Opens a database that only exists for the life of the connection with
+    /// [`ConnectionOptions`].
+    pub fn open_in_memory_with_options(options: ConnectionOptions) -> Result<Connection> {
+        Connection::connect(":memory:", options)
+    }
+
+    fn connect(name: &str, options: ConnectionOptions) -> Result<Connection> {
         let env = raw::alloc_env()?;
         let dbc = match raw::alloc_dbc(env) {
             Ok(dbc) => dbc,
@@ -57,7 +89,9 @@ impl Connection {
                 return Err(e);
             }
         };
-        if let Err(e) = raw::connect(dbc, name) {
+        // libvsql only reads the options when it connects.
+        let connected = options.set(dbc).and_then(|()| raw::connect(dbc, name));
+        if let Err(e) = connected {
             let _ = raw::free_handle(SQL_HANDLE_DBC, dbc);
             let _ = raw::free_handle(SQL_HANDLE_ENV, env);
             return Err(e);
@@ -74,6 +108,27 @@ impl Connection {
         raw::set_autocommit(dbc, true)?;
 
         Ok(conn)
+    }
+
+    /// How long a statement waits for another connection's SERIALIZABLE
+    /// transaction to finish before it fails with a serialization failure
+    /// (SQLSTATE `40001`). It's [`ConnectionOptions::busy_timeout`], since
+    /// it can only be set when the connection is opened.
+    pub fn busy_timeout(&self) -> Result<Duration> {
+        self.timeout(SQL_ATTR_VSQL_LOCK_TIMEOUT)
+    }
+
+    /// How long `CREATE INDEX` waits for the transactions that changed the
+    /// table to finish before it fails (SQLSTATE `55P03`). It's
+    /// [`ConnectionOptions::create_index_timeout`], since it can only be set
+    /// when the connection is opened.
+    pub fn create_index_timeout(&self) -> Result<Duration> {
+        self.timeout(SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT)
+    }
+
+    fn timeout(&self, attribute: SQLINTEGER) -> Result<Duration> {
+        let millis = raw::get_connect_attr(self.dbc, attribute)?;
+        Ok(Duration::from_millis(u64::try_from(millis).unwrap_or(0)))
     }
 
     pub(crate) fn dbc(&self) -> SQLHDBC {
@@ -385,6 +440,62 @@ impl std::fmt::Debug for Connection {
             .field("autocommit", &self.is_autocommit())
             .finish_non_exhaustive()
     }
+}
+
+/// The options that a connection is opened with, see
+/// [`Connection::open_with_options`]. vsql only reads them when it connects,
+/// so they can't be changed afterwards.
+///
+/// A timeout is rounded up to a whole number of milliseconds, and is at most
+/// `i32::MAX` milliseconds (about 24 days).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ConnectionOptions {
+    /// How long a statement (or a transaction) waits for another connection's
+    /// SERIALIZABLE transaction to finish before it fails with a
+    /// serialization failure (SQLSTATE `40001`). Zero doesn't wait. The
+    /// default is 5 seconds.
+    pub busy_timeout: Duration,
+
+    /// How long `CREATE INDEX` waits for the transactions that changed the
+    /// table to finish before it fails (SQLSTATE `55P03`). The default is 60
+    /// seconds.
+    pub create_index_timeout: Duration,
+}
+
+impl Default for ConnectionOptions {
+    fn default() -> Self {
+        ConnectionOptions {
+            busy_timeout: Duration::from_secs(5),
+            create_index_timeout: Duration::from_secs(60),
+        }
+    }
+}
+
+impl ConnectionOptions {
+    pub fn busy_timeout(mut self, busy_timeout: Duration) -> Self {
+        self.busy_timeout = busy_timeout;
+        self
+    }
+
+    pub fn create_index_timeout(mut self, create_index_timeout: Duration) -> Self {
+        self.create_index_timeout = create_index_timeout;
+        self
+    }
+
+    fn set(&self, dbc: SQLHDBC) -> Result<()> {
+        raw::set_connect_attr(dbc, SQL_ATTR_VSQL_LOCK_TIMEOUT, millis(self.busy_timeout))?;
+        raw::set_connect_attr(
+            dbc,
+            SQL_ATTR_VSQL_CREATE_INDEX_TIMEOUT,
+            millis(self.create_index_timeout),
+        )
+    }
+}
+
+/// The milliseconds of a timeout, rounded up.
+fn millis(timeout: Duration) -> SQLINTEGER {
+    SQLINTEGER::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(SQLINTEGER::MAX)
 }
 
 /// The isolation level of a transaction. vsql's transactions are READ
